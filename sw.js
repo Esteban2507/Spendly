@@ -1,19 +1,19 @@
 // Service Worker - Spendly (PWA Offline Cache)
 // Estrategia: Network-first con fallback a caché y actualización en segundo plano
-const CACHE_NAME = "spendly-v3";
+const CACHE_NAME = "spendly-v4";
 
 const APP_SHELL = [
   "./",
-  "index.html",
-  "manifest.webmanifest",
-  "css/styles.css",
-  "js/state.js",
-  "js/recurring.js",
-  "js/chart.js",
-  "js/app.js",
-  "assets/icons/icon-180.png",
-  "assets/icons/icon-192.png",
-  "assets/icons/icon-512.png"
+  "./index.html",
+  "./manifest.webmanifest",
+  "./css/styles.css",
+  "./js/state.js",
+  "./js/recurring.js",
+  "./js/chart.js",
+  "./js/app.js",
+  "./assets/icons/icon-180.png",
+  "./assets/icons/icon-192.png",
+  "./assets/icons/icon-512.png"
 ];
 
 self.addEventListener("install", (event) => {
@@ -50,7 +50,9 @@ self.addEventListener("fetch", (event) => {
         return response;
       })
       .catch(() =>
-        caches.match(request).then((cached) => cached || caches.match("index.html"))
+        caches
+          .match(request)
+          .then((cached) => cached || caches.match("./index.html") || caches.match("index.html"))
       )
   );
 });

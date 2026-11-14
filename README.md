@@ -14,7 +14,7 @@ El código está organizado de manera modular y limpia sin necesidad de compilad
 spendly/
 ├── index.html              # Estructura semántica con navegación por pestañas dinámicas
 ├── manifest.webmanifest    # Configuración PWA (nombre, tema, iconos e instalación)
-├── sw.js                   # Service Worker para funcionamiento sin conexión (spendly-v3)
+├── sw.js                   # Service Worker para funcionamiento sin conexión (spendly-v4)
 ├── README.md               # Documentación y guía del proyecto
 ├── css/
 │   └── styles.css          # Estilos modernos, paleta cromática viva, componentes y modo oscuro
@@ -57,7 +57,7 @@ spendly/
 2. En la pantalla del repositorio pulsa **uploading an existing file** y arrastra todos los archivos y carpetas de este proyecto (`index.html`, `css/`, `js/`, `assets/`, `manifest.webmanifest`, `sw.js`).
 3. Pulsa **Commit changes**.
 4. Ve a **Settings → Pages**. En *Source* elige **Deploy from a branch**, rama **main**, carpeta **/ (root)** y guarda.
-5. En 1 o 2 minutos tu aplicación estará disponible en `https://TU-USUARIO.github.io/spendly/`.
+5. En 1 o 2 minutos tu aplicación estará disponible en `https://esteban2507.github.io/Spendly/` (o tu usuario correspondiente).
 
 ---
 
