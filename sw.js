@@ -1,19 +1,56 @@
-// Service worker: la app funciona sin conexión. Con conexión usa siempre la versión más reciente.
-const V = "spendly-v1";
-const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
-self.addEventListener("install", e => {
-  e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+// Service Worker - Spendly (PWA Offline Cache)
+// Estrategia: Network-first con fallback a caché y actualización en segundo plano
+const CACHE_NAME = "spendly-v3";
+
+const APP_SHELL = [
+  "./",
+  "index.html",
+  "manifest.webmanifest",
+  "css/styles.css",
+  "js/state.js",
+  "js/recurring.js",
+  "js/chart.js",
+  "js/app.js",
+  "assets/icons/icon-180.png",
+  "assets/icons/icon-192.png",
+  "assets/icons/icon-512.png"
+];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => self.skipWaiting())
+  );
 });
-self.addEventListener("activate", e => {
-  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))
+      )
+      .then(() => self.clients.claim())
+  );
 });
-self.addEventListener("fetch", e => {
-  const r = e.request;
-  if (r.method !== "GET" || new URL(r.url).origin !== location.origin) return;
-  e.respondWith(
-    fetch(r).then(res => {
-      if (res.ok) { const cp = res.clone(); caches.open(V).then(c => c.put(r, cp)); }
-      return res;
-    }).catch(() => caches.match(r).then(m => m || caches.match("index.html")))
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET" || new URL(request.url).origin !== location.origin) return;
+
+  event.respondWith(
+    fetch(request)
+      .then((response) => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+        }
+        return response;
+      })
+      .catch(() =>
+        caches.match(request).then((cached) => cached || caches.match("index.html"))
+      )
   );
 });
