@@ -25,6 +25,9 @@
     exportEvolutionCsv,
     exportBackup,
     detectDefaultCurrency,
+    parseAmount,
+    sanitizeState,
+    applyState,
     Recurring,
     Chart
   } = window.Spendly;
@@ -43,6 +46,7 @@
   let evolutionRange = 6;
   let searchTerm = "";
   let selectedCategoryChip = "Comida";
+  let editingId = null; // id del gasto que se está editando (null = alta nueva)
 
   // --------------------------------------------------------------------------
   // Sistema de Notificaciones Toast
@@ -167,15 +171,56 @@
         chip.classList.add("active");
       }
 
-      chip.onclick = () => {
-        selectedCategoryChip = name;
-        if (catSelect) catSelect.value = name;
-        container.querySelectorAll(".chip-btn").forEach((c) => c.classList.remove("active"));
-        chip.classList.add("active");
-      };
+      chip.dataset.cat = name;
+      chip.onclick = () => selectCategory(name);
 
       container.appendChild(chip);
     });
+  }
+
+  function selectCategory(name) {
+    selectedCategoryChip = name;
+    const catSelect = $("cat");
+    if (catSelect) catSelect.value = name;
+    document.querySelectorAll("#cat-chips .chip-btn").forEach((c) => {
+      c.classList.toggle("active", c.dataset.cat === name);
+    });
+  }
+
+  // Modo edición: reutiliza el formulario de "Registrar Nuevo Gasto"
+  function setEditMode(expense) {
+    editingId = expense ? expense.id : null;
+    $("edit-banner").hidden = !expense;
+    $("edit-banner-text").textContent = expense ? `✏️ Editando «${expense.desc}»` : "";
+    $("add").textContent = expense ? "💾 Guardar cambios" : "＋ Añadir Gasto";
+    const recLabel = $("rec").closest("label");
+    if (recLabel) recLabel.hidden = !!expense;
+    $("rec").checked = false;
+    $("err").textContent = "";
+    if (expense) {
+      $("desc").value = expense.desc;
+      $("amt").value = String(expense.amount).replace(".", ",");
+      $("date").value = expense.date;
+      selectCategory(expense.cat);
+    } else {
+      $("desc").value = "";
+      $("amt").value = "";
+      $("date").value = today();
+    }
+  }
+
+  function startEdit(expense) {
+    switchTab("movements");
+    setEditMode(expense);
+    const formCard = $("desc").closest(".card");
+    if (formCard && formCard.scrollIntoView) formCard.scrollIntoView({ block: "start" });
+    $("desc").focus();
+  }
+
+  function notifyExport(result, label, feminine) {
+    if (result === "cancelled") return;
+    const end = feminine ? "a" : "o";
+    showToast(result === "shared" ? `${label} compartid${end}` : `${label} descargad${end}`, "success", "📥");
   }
 
   function persistAndNotify() {
@@ -419,6 +464,7 @@
           `¿Deseas eliminar "${item.desc}" (${formatCurrency(item.amount)})?`
         );
         if (ok) {
+          if (editingId === item.id) setEditMode(null);
           State.expenses = State.expenses.filter((x) => x.id !== item.id);
           persistAndNotify();
           render();
@@ -426,7 +472,14 @@
         }
       };
 
+      const editBtn = createElement("button", "edit-btn", "✏️");
+      editBtn.type = "button";
+      editBtn.title = "Editar este gasto";
+      editBtn.setAttribute("aria-label", `Editar gasto ${item.desc}`);
+      editBtn.onclick = () => startEdit(item);
+
       rightDiv.appendChild(amtEl);
+      rightDiv.appendChild(editBtn);
       rightDiv.appendChild(delBtn);
 
       row.appendChild(leftDiv);
@@ -565,44 +618,59 @@
     const descInput = $("desc");
     const amtInput = $("amt");
     const dateInput = $("date");
-    const catInput = $("cat");
     const recCheckbox = $("rec");
     const errBox = $("err");
 
     const desc = descInput.value.trim();
-    const amountVal = parseFloat(amtInput.value.replace(",", "."));
+    const amountVal = parseAmount(amtInput.value);
     const dateVal = dateInput.value;
-    const catVal = selectedCategoryChip || catInput.value;
+    const catVal = selectedCategoryChip || $("cat").value;
 
-    if (!desc || isNaN(amountVal) || amountVal <= 0 || !dateVal) {
+    if (!desc || !(amountVal > 0) || !dateVal) {
       errBox.textContent = "⚠️ Completa la descripción, un importe mayor a 0 y una fecha válida.";
       return;
     }
 
     errBox.textContent = "";
+    const amount = Math.round(amountVal * 100) / 100;
 
-    const newExpense = {
-      id: uid(),
-      desc: desc,
-      amount: Math.round(amountVal * 100) / 100,
-      cat: catVal,
-      date: dateVal
-    };
+    // --- Edición de un gasto existente ---
+    if (editingId) {
+      const target = State.expenses.find((x) => x.id === editingId);
+      if (target) Object.assign(target, { desc, amount, cat: catVal, date: dateVal });
+      setEditMode(null);
+      currentMonth = dateVal.slice(0, 7);
+      persistAndNotify();
+      render();
+      showToast(`Gasto «${desc}» actualizado`, "success", "✏️");
+      return;
+    }
 
-    State.expenses.push(newExpense);
+    // --- Alta nueva ---
+    State.expenses.push({ id: uid(), desc, amount, cat: catVal, date: dateVal });
 
+    let recurringNote = "";
     if (recCheckbox.checked) {
+      // La regla empieza este mes (o el mes del gasto si es futuro): nunca rellena meses pasados.
+      const expMonth = dateVal.slice(0, 7);
+      const nowMonth = ymOf(new Date());
+      const startMonth = expMonth > nowMonth ? expMonth : nowMonth;
       State.recurring.push({
         id: uid(),
-        desc: desc,
-        amount: newExpense.amount,
-        cat: newExpense.cat,
+        desc,
+        amount,
+        cat: catVal,
         day: Number(dateVal.slice(8)),
-        from: dateVal.slice(0, 7),
-        done: [dateVal.slice(0, 7)]
+        from: startMonth,
+        done: expMonth === startMonth ? [expMonth] : []
       });
       recCheckbox.checked = false;
-      Recurring.apply();
+      const res = Recurring.apply();
+      recurringNote =
+        expMonth < nowMonth
+          ? ` Se repetirá cada mes desde ${Chart.getMonthName(startMonth).toLowerCase()}.`
+          : " Se repetirá cada mes.";
+      if (res.added > 0) recurringNote += " Ya se añadió el de este mes.";
     }
 
     currentMonth = dateVal.slice(0, 7);
@@ -613,7 +681,7 @@
 
     persistAndNotify();
     render();
-    showToast(`¡Gasto de ${formatCurrency(newExpense.amount)} añadido!`, "success", "🎉");
+    showToast(`¡Gasto de ${formatCurrency(amount)} añadido!${recurringNote}`, "success", "🎉");
   }
 
   // --------------------------------------------------------------------------
@@ -622,7 +690,7 @@
   function init() {
     initTheme();
     initTabs();
-    loadState();
+    const loadInfo = loadState();
 
     // Rellenar selectores de categoría
     const catSelect = $("cat");
@@ -658,6 +726,7 @@
 
     // Añadir gasto
     $("add").onclick = handleAddExpense;
+    $("cancel-edit").onclick = () => setEditMode(null);
     ["desc", "amt", "date"].forEach((id) => {
       $(id).addEventListener("keydown", (e) => {
         if (e.key === "Enter") handleAddExpense();
@@ -692,14 +761,12 @@
 
     // Exportaciones CSV
     $("csv").onclick = () => {
-      exportMonthCsv(currentMonth);
-      showToast("Descargando CSV de movimientos...", "info", "📥");
+      exportMonthCsv(currentMonth).then((r) => notifyExport(r, "CSV de movimientos"));
     };
 
     $("csvevo").onclick = () => {
       const months = Chart.getLastMonths(evolutionRange);
-      exportEvolutionCsv(months);
-      showToast("Descargando CSV de evolución...", "info", "📥");
+      exportEvolutionCsv(months).then((r) => notifyExport(r, "CSV de evolución"));
     };
 
     // Rango de gráfico
@@ -716,8 +783,7 @@
 
     // Respaldos
     $("bk").onclick = () => {
-      exportBackup();
-      showToast("Copia de seguridad descargada", "success", "💾");
+      exportBackup().then((r) => notifyExport(r, "Copia de seguridad", true));
     };
 
     $("rs").onclick = () => $("rsfile").click();
@@ -735,24 +801,15 @@
           throw new Error("Formato inválido");
         }
 
-        const validExpenses = imported.expenses.filter(
-          (x) =>
-            x &&
-            typeof x.date === "string" &&
-            typeof x.desc === "string" &&
-            !isNaN(Number(x.amount))
-        );
-
+        const clean = sanitizeState(imported);
+        const skipped = clean.dropped > 0 ? `; se omitirán ${clean.dropped} registros dañados` : "";
         const ok = window.confirm(
-          `Esto reemplazará los datos actuales por los del archivo (${validExpenses.length} movimientos). ¿Continuar?`
+          `Esto reemplazará los datos actuales por los del archivo (${clean.expenses.length} movimientos${skipped}). ¿Continuar?`
         );
         if (!ok) return;
 
-        State.expenses = validExpenses;
-        State.budget = Number(imported.budget) || 0;
-        State.currency = imported.currency || detectDefaultCurrency();
-        State.recurring = Array.isArray(imported.recurring) ? imported.recurring : [];
-        State.dismissed = Array.isArray(imported.dismissed) ? imported.dismissed : [];
+        setEditMode(null);
+        applyState(clean);
 
         persistAndNotify();
         $("budget").value = State.budget > 0 ? State.budget : "";
@@ -764,9 +821,8 @@
       }
     };
 
-    if (Recurring.apply()) {
-      saveState();
-    }
+    const recurringResult = Recurring.apply();
+    if (recurringResult.changed) saveState();
 
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
@@ -778,11 +834,33 @@
       });
     }
 
-    const statusEl = $("status");
-    if (statusEl) statusEl.textContent = "Tus datos se guardan en este dispositivo";
-
     render();
+
+    if (loadInfo.dropped > 0) {
+      const n = loadInfo.dropped;
+      showToast(
+        n === 1 ? "Se omitió 1 registro dañado al cargar tus datos" : `Se omitieron ${n} registros dañados al cargar tus datos`,
+        "info",
+        "⚠️"
+      );
+    }
+    if (recurringResult.added > 0) {
+      const n = recurringResult.added;
+      showToast(
+        n === 1 ? "Se añadió 1 gasto recurrente de este mes" : `Se añadieron ${n} gastos recurrentes de este mes`,
+        "info",
+        "🔄"
+      );
+    }
   }
+
+  // Exponer utilidades para otros módulos (como el escáner)
+  window.Spendly = window.Spendly || {};
+  window.Spendly.showToast = showToast;
+  window.Spendly.renderAll = (targetMonth) => {
+    if (targetMonth) currentMonth = targetMonth;
+    render();
+  };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);

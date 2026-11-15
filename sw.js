@@ -1,6 +1,6 @@
 // Service Worker - Spendly (PWA Offline Cache)
 // Estrategia: Network-first con fallback a caché y actualización en segundo plano
-const CACHE_NAME = "spendly-v4";
+const CACHE_NAME = "spendly-v6";
 
 const APP_SHELL = [
   "./",
@@ -10,10 +10,15 @@ const APP_SHELL = [
   "./js/state.js",
   "./js/recurring.js",
   "./js/chart.js",
+  "./js/scanner.js",
   "./js/app.js",
-  "./assets/icons/icon-180.png",
+  "./assets/brand/spendly-header-logo.png",
+  "./assets/icons/app-icon-512.png",
+  "./assets/icons/icon-512.png",
   "./assets/icons/icon-192.png",
-  "./assets/icons/icon-512.png"
+  "./assets/icons/icon-180.png",
+  "./assets/icons/apple-touch-icon.png",
+  "./assets/icons/favicon.ico"
 ];
 
 self.addEventListener("install", (event) => {

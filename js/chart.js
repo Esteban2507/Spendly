@@ -16,7 +16,8 @@
     State,
     ymOf,
     shiftMonth,
-    formatCurrency
+    formatCurrency,
+    LOCALE
   } = window.Spendly;
 
   function createSvgElement(tag, attrs = {}, parent = null, textContent = null) {
@@ -106,7 +107,7 @@
     const maxVal = Math.max(...monthlyTotals, Number(State.budget) || 0) * 1.12;
     const getY = (val) => marginTop + plotHeight - (val / maxVal) * plotHeight;
 
-    const compactFmt = new Intl.NumberFormat("es-ES", {
+    const compactFmt = new Intl.NumberFormat(LOCALE, {
       notation: "compact",
       maximumFractionDigits: 1
     });

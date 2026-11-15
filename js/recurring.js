@@ -21,12 +21,13 @@
   /**
    * Genera los gastos pendientes correspondientes a las reglas recurrentes activas.
    * Se ejecuta al iniciar la aplicación o al crear una nueva regla.
-   * @returns {boolean} True si se insertó al menos un nuevo gasto recurrente.
+   * @returns {{changed: boolean, added: number}} changed: hay que guardar; added: gastos nuevos creados.
    */
   function applyRecurring() {
     const currentMonth = ymOf(new Date());
     const currentDate = today();
     let hasChanged = false;
+    let added = 0;
 
     State.recurring.forEach((rule) => {
       rule.done = rule.done || [];
@@ -60,11 +61,12 @@
             date: expenseDate,
             rid: rule.id
           });
+          added++;
         }
       }
     });
 
-    return hasChanged;
+    return { changed: hasChanged, added };
   }
 
   /**

@@ -26,11 +26,7 @@
     <!-- Encabezado con Identidad y Selector de Mes -->
     <header>
       <div class="brand-area">
-        <div class="brand-logo">S</div>
-        <div>
-          <h1>Spendly</h1>
-          <div class="sub" id="status">Tus datos se guardan en este dispositivo</div>
-        </div>
+        <img src="./assets/brand/spendly-header-logo.png" alt="Spendly" class="header-logo">
       </div>
       <div class="row">
         <button id="theme-btn" class="btn-icon" title="Cambiar tema (Claro / Oscuro / Sistema)" aria-label="Cambiar tema">🌙</button>
@@ -82,6 +78,10 @@
             <b id="hero-metric-top">—</b>
           </div>
         </div>
+
+        <button type="button" class="btn-scan-hero" id="btn-scan-receipt-hero">
+          <span>🧾</span> Subir o Escanear Comprobante (PDF / Foto)
+        </button>
       </div>
 
       <!-- Desglose por Categoría con Barras y Emojis -->
@@ -118,11 +118,34 @@
          PESTAÑA 2: MOVIMIENTOS & FORMULARIO
          ==================================================================== -->
     <section id="tab-movements" class="tab-content">
+      <!-- Escáner / Subida de Comprobantes (PDF o Imagen) -->
+      <div class="card receipt-dropzone-card" id="receipt-dropzone">
+        <div class="receipt-dropzone-inner">
+          <div class="receipt-dropzone-left">
+            <div class="receipt-dropzone-icon">🧾</div>
+            <div class="receipt-dropzone-text">
+              <h3>Subir Comprobante o Factura (PDF / Imagen)</h3>
+              <p>Arrastra aquí tu ticket o pulsa para escanear. Spendly leerá los datos para que los confirmes.</p>
+            </div>
+          </div>
+          <button type="button" class="pri" id="btn-scan-receipt">
+            <span>📷</span> Subir Ticket
+          </button>
+          <input type="file" id="receipt-file-input" accept="image/*,application/pdf" style="display:none">
+        </div>
+      </div>
+
       <!-- Formulario para Registrar Nuevo Gasto -->
       <div class="card">
         <div class="form-card-header">
           <h2 style="margin:0"><span>✨</span> Registrar Nuevo Gasto</h2>
           <span class="sub">Elige categoría y monto</span>
+        </div>
+
+        <!-- Aviso de edición (solo visible al editar un gasto) -->
+        <div id="edit-banner" class="edit-banner" hidden>
+          <span id="edit-banner-text"></span>
+          <button type="button" id="cancel-edit">Cancelar</button>
         </div>
 
         <!-- Chips Visuales de Categorías con Emojis -->
@@ -218,10 +241,79 @@
     </section>
   </main>
 
+  <!-- Modal de Revisión y Corrección de Comprobante -->
+  <div id="receipt-modal" class="modal-overlay" hidden>
+    <div class="modal-container">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="modal-title-icon">🧾</span>
+          <h3>Revisar Comprobante Leído</h3>
+        </div>
+        <button type="button" class="btn-close-modal" id="btn-close-receipt-modal" aria-label="Cerrar modal">✕</button>
+      </div>
+
+      <!-- Estado durante la extracción -->
+      <div id="receipt-loading" class="receipt-loading-box" hidden>
+        <div class="spinner"></div>
+        <div id="receipt-loading-text" class="receipt-loading-text">Leyendo comprobante...</div>
+        <div class="sub">Extrayendo texto, montos y comercio</div>
+      </div>
+
+      <!-- Formulario de Revisión y Corrección -->
+      <div id="receipt-review-form" class="receipt-review-content">
+        <div class="receipt-preview-banner">
+          <div id="receipt-preview-thumb" class="receipt-thumb">📄</div>
+          <div class="receipt-file-meta">
+            <b id="receipt-file-name">comprobante.pdf</b>
+            <span class="sub">✨ Datos detectados. Puedes corregir cualquier dato antes de guardar:</span>
+          </div>
+        </div>
+
+        <div class="receipt-fields-grid">
+          <div class="field-group">
+            <label class="lbl" for="receipt-desc">Comercio o Descripción</label>
+            <input id="receipt-desc" type="text" placeholder="Ej. Supermercado Coto" maxlength="80">
+          </div>
+          <div class="field-group">
+            <label class="lbl" for="receipt-amt">Importe Total</label>
+            <input id="receipt-amt" type="text" inputmode="decimal" placeholder="0.00">
+          </div>
+          <div class="field-group">
+            <label class="lbl" for="receipt-date">Fecha</label>
+            <input id="receipt-date" type="date">
+          </div>
+          <div class="field-group">
+            <label class="lbl" for="receipt-cat">Categoría</label>
+            <select id="receipt-cat"></select>
+          </div>
+        </div>
+
+        <label class="sub" style="display:inline-flex;gap:8px;align-items:center;margin-top:12px;cursor:pointer">
+          <input type="checkbox" id="receipt-rec" style="padding:0"> Repetir este gasto cada mes
+        </label>
+
+        <!-- Acordeón con texto original extraído -->
+        <details class="receipt-raw-details">
+          <summary>Ver texto detectado del comprobante</summary>
+          <pre id="receipt-raw-text"></pre>
+        </details>
+
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" id="btn-cancel-receipt">Descartar</button>
+          <button type="button" class="pri" id="btn-confirm-receipt">✅ Añadir Gasto</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Librería PDF.js para lectura de comprobantes PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
   <!-- Módulos JavaScript -->
   <script src="./js/state.js"></script>
   <script src="./js/recurring.js"></script>
   <script src="./js/chart.js"></script>
+  <script src="./js/scanner.js"></script>
   <script src="./js/app.js"></script>
 </body>
 </html>

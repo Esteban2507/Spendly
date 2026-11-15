@@ -14,7 +14,7 @@ El código está organizado de manera modular y limpia sin necesidad de compilad
 spendly/
 ├── index.html              # Estructura semántica con navegación por pestañas dinámicas
 ├── manifest.webmanifest    # Configuración PWA (nombre, tema, iconos e instalación)
-├── sw.js                   # Service Worker para funcionamiento sin conexión (spendly-v4)
+├── sw.js                   # Service Worker para funcionamiento sin conexión (spendly-v5)
 ├── README.md               # Documentación y guía del proyecto
 ├── css/
 │   └── styles.css          # Estilos modernos, paleta cromática viva, componentes y modo oscuro

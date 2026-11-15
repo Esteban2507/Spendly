@@ -742,6 +742,41 @@ button.btn-icon {
   transform: scale(1.1);
 }
 
+.edit-btn {
+  background: transparent;
+  border: none;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mut);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.edit-btn:hover {
+  background: var(--ac-light);
+  color: var(--ac);
+  transform: scale(1.1);
+}
+
+.edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--ac-light);
+  color: var(--ac);
+  font-weight: 600;
+  font-size: 14px;
+}
+
 /* --------------------------------------------------------------------------
    12. Gastos Recurrentes y Sugerencias
    -------------------------------------------------------------------------- */
@@ -904,4 +939,323 @@ button.btn-icon {
 
 [hidden] {
   display: none !important;
+}
+
+/* iOS hace zoom al enfocar campos con menos de 16 px */
+@media (pointer: coarse) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   16. Escáner de Comprobantes y Modal de Revisión
+   -------------------------------------------------------------------------- */
+.receipt-dropzone-card {
+  border: 1.5px dashed var(--ac);
+  background: linear-gradient(135deg, rgba(0, 229, 188, 0.05) 0%, rgba(99, 102, 241, 0.03) 100%);
+  cursor: pointer;
+  transition: var(--transition);
+  margin-bottom: 4px;
+}
+
+.receipt-dropzone-card:hover, .receipt-dropzone-card.dragover {
+  border-color: var(--ac);
+  background: var(--ac-light);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 229, 188, 0.15);
+}
+
+.receipt-dropzone-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.receipt-dropzone-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+  min-width: 240px;
+}
+
+.receipt-dropzone-icon {
+  font-size: 30px;
+  width: 50px;
+  height: 50px;
+  border-radius: var(--radius);
+  background: var(--ac-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.receipt-dropzone-text h3 {
+  margin: 0 0 3px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--tx-heading);
+}
+
+.receipt-dropzone-text p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--mut);
+  line-height: 1.4;
+}
+
+/* Botón de escaneo rápido en la Hero Card */
+.btn-scan-hero {
+  background: rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #ffffff;
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition);
+  margin-top: 10px;
+}
+
+.btn-scan-hero:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Modal Overlay & Contenedor */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal-container {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-lg);
+  max-width: 520px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 40px -8px rgba(0, 0, 0, 0.5);
+  animation: modalScaleUp 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@keyframes modalScaleUp {
+  from { opacity: 0; transform: scale(0.95) translateY(12px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--bd);
+  padding-bottom: 14px;
+}
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modal-title h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--tx-heading);
+}
+
+.modal-title-icon {
+  font-size: 22px;
+}
+
+.btn-close-modal {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  color: var(--mut);
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+}
+
+.btn-close-modal:hover {
+  background: var(--card-subtle);
+  color: var(--tx);
+}
+
+/* Estado de Carga / Spinner */
+.receipt-loading-box {
+  padding: 36px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.spinner {
+  width: 44px;
+  height: 44px;
+  border: 3.5px solid var(--bd);
+  border-top-color: var(--ac);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.receipt-loading-text {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--tx-heading);
+}
+
+/* Banner de Previsualización de Comprobante */
+.receipt-preview-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--card-subtle);
+  border: 1px solid var(--bd);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.receipt-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  background-color: var(--ac-light);
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  flex: none;
+  border: 1px solid var(--bd);
+}
+
+.receipt-file-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.receipt-file-meta b {
+  font-size: 14px;
+  color: var(--tx-heading);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Cuadrícula de Campos de Revisión */
+.receipt-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+@media (max-width: 500px) {
+  .receipt-fields-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-group label {
+  font-size: 11px;
+}
+
+/* Acordeón de Texto Original */
+.receipt-raw-details {
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-sm);
+  background: var(--inp);
+  margin-top: 8px;
+}
+
+.receipt-raw-details summary {
+  padding: 9px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mut);
+  cursor: pointer;
+  user-select: none;
+}
+
+.receipt-raw-details summary:hover {
+  color: var(--tx);
+}
+
+.receipt-raw-details pre {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--tx);
+  max-height: 130px;
+  overflow-y: auto;
+  border-top: 1px solid var(--bd);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Footer del Modal */
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid var(--bd);
+  padding-top: 16px;
+  margin-top: 8px;
+}
+
+.btn-secondary {
+  background: var(--card-subtle);
+  color: var(--tx);
+  border: 1px solid var(--bd);
+}
+
+.btn-secondary:hover {
+  background: var(--bd);
 }
