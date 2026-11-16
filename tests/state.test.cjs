@@ -94,6 +94,10 @@ test('corrupted source stays intact until explicit successful backup restoration
   const original='{broken-json'; const store=new Map([['gastos-v1',original]]);
   const s=environment(store); const info=s.loadState();
   assert.ok(info.error); assert.equal(info.recoverySaved,true);
+  let ran = false;
+  assert.equal(s.persistChange(() => { ran = true; return false; }), false);
+  assert.equal(ran, false);
+  assert.equal(s.getStorageStatus().ok, false);
   assert.equal(s.persistChange(()=>s.State.expenses.push(expense('a'))),false);
   assert.equal(store.get('gastos-v1'),original);
   assert.equal(s.replaceState(s.sanitizeState({expenses:[expense('recovered')],currency:'ARS'})),true);

@@ -422,6 +422,7 @@
   }
 
   function persistChange(mutator) {
+    if (storageBlocked) return failStorage("recovery", "Hay un problema al cargar tus datos. Restaura una copia antes de guardar nuevos cambios.");
     const previous = snapshot();
     try {
       const result = mutator();
