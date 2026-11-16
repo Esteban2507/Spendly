@@ -20,7 +20,7 @@
 </head>
 <body>
   <!-- Contenedor de Notificaciones Toast Flotantes -->
-  <div id="toast-container" class="toast-container"></div>
+  <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
 
   <main>
     <!-- Encabezado con Identidad y Selector de Mes -->
@@ -39,7 +39,7 @@
     </header>
 
     <!-- Barra de Pestañas Dinámicas -->
-    <nav class="tabs-nav" aria-label="Pestañas de navegación">
+    <nav class="tabs-nav" role="tablist" aria-label="Pestañas de navegación">
       <button class="tab-btn active" data-tab="summary">
         <span>📊</span> Resumen
       </button>
@@ -60,7 +60,7 @@
     <section id="tab-summary" class="tab-content active">
       <!-- Tarjeta Hero Resumen Dinámica -->
       <div class="hero-card">
-        <div class="hero-title">Gastado este mes</div>
+        <div class="hero-title">Gastos registrados del mes</div>
         <div class="hero-amount" id="hero-total">0,00 €</div>
         <div class="hero-delta" id="hero-delta">Sin datos de mes anterior</div>
 
@@ -79,6 +79,12 @@
           </div>
         </div>
 
+        <div class="hero-metrics forecast-metrics">
+          <div class="hero-metric-box"><span>Proyección de cierre</span><b id="hero-projection">—</b><small id="projection-note"></small></div>
+          <div class="hero-metric-box"><span>Recurrentes pendientes</span><b id="hero-pending">—</b></div>
+          <div class="hero-metric-box"><span>Disponible por día</span><b id="hero-available">—</b><small id="available-note"></small></div>
+        </div>
+
         <button type="button" class="btn-scan-hero" id="btn-scan-receipt-hero">
           <span>🧾</span> Subir o Escanear Comprobante (PDF / Foto)
         </button>
@@ -88,6 +94,13 @@
       <div class="card">
         <h2><span>🏷️</span> Gastos por Categoría</h2>
         <div id="cats"></div>
+        <div id="category-budgets-summary" class="category-budgets-summary"></div>
+      </div>
+
+      <div class="card" id="pending-card" hidden>
+        <h2><span>📅</span> Recurrentes pendientes del mes</h2>
+        <p class="sub">Importes programados que todavía no están registrados. Se descuentan del disponible diario.</p>
+        <div id="pending-list"></div>
       </div>
 
       <!-- Evolución Histórica Interactiva -->
@@ -200,14 +213,15 @@
     <section id="tab-settings" class="tab-content">
       <!-- Configuración de Presupuesto y Moneda -->
       <div class="card">
-        <h2><span>🎯</span> Presupuesto y Moneda</h2>
+        <h2><span>🎯</span> Presupuesto de <span id="budget-month-label"></span></h2>
+        <p class="sub">Cada mes conserva su presupuesto. Los límites por categoría son opcionales y no se suman al presupuesto total.</p>
         <div class="row" style="margin-top:10px">
           <div>
             <label class="lbl" for="budget" style="display:block;margin-bottom:4px">Presupuesto Mensual</label>
-            <input id="budget" type="number" min="0" step="10" placeholder="Sin definir" style="width:140px">
+            <input id="budget" inputmode="decimal" placeholder="Sin definir" style="width:140px">
           </div>
           <div>
-            <label class="lbl" for="cur" style="display:block;margin-bottom:4px">Divisa</label>
+            <label class="lbl" for="cur" style="display:block;margin-bottom:4px">Moneda única</label>
             <select id="cur">
               <option>EUR</option>
               <option>USD</option>
@@ -221,6 +235,9 @@
             </select>
           </div>
         </div>
+        <p id="currency-note" class="sub"></p>
+        <div id="category-budget-fields" class="category-budget-fields"></div>
+        <div class="row" style="margin-top:12px"><button id="save-budget" class="pri">Guardar presupuesto del mes</button><button id="copy-budget">Copiar mes anterior</button></div>
 
         <div class="bar"><i id="bfill"></i></div>
         <div class="sub" id="bsub">Define un presupuesto para medir tu progreso mensual</div>
@@ -237,17 +254,26 @@
           <button id="rs">📥 Restaurar Respaldo</button>
           <input id="rsfile" type="file" accept="application/json,.json" hidden>
         </div>
+        <p id="status" class="sub" role="status" aria-live="polite">Datos guardados en este dispositivo</p>
+        <p id="storage-error" class="err" role="alert" hidden></p>
+      </div>
+
+      <div class="card">
+        <h2><span>📴</span> Comprobantes sin conexión</h2>
+        <p class="sub">Descargá el lector de PDF y el motor OCR una vez con conexión. Las imágenes y los comprobantes se procesan en tu dispositivo.</p>
+        <button id="prepare-offline" type="button">Preparar lector sin conexión</button>
+        <p id="offline-status" class="sub" role="status" aria-live="polite">Consultando disponibilidad…</p>
       </div>
     </section>
   </main>
 
   <!-- Modal de Revisión y Corrección de Comprobante -->
   <div id="receipt-modal" class="modal-overlay" hidden>
-    <div class="modal-container">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="receipt-modal-title" tabindex="-1">
       <div class="modal-header">
         <div class="modal-title">
           <span class="modal-title-icon">🧾</span>
-          <h3>Revisar Comprobante Leído</h3>
+          <h3 id="receipt-modal-title">Revisar Comprobante Leído</h3>
         </div>
         <button type="button" class="btn-close-modal" id="btn-close-receipt-modal" aria-label="Cerrar modal">✕</button>
       </div>
@@ -268,6 +294,7 @@
             <span class="sub">✨ Datos detectados. Puedes corregir cualquier dato antes de guardar:</span>
           </div>
         </div>
+        <div id="receipt-warning" class="receipt-warning" role="status" aria-live="polite" hidden></div>
 
         <div class="receipt-fields-grid">
           <div class="field-group">
@@ -302,18 +329,18 @@
           <button type="button" class="btn-secondary" id="btn-cancel-receipt">Descartar</button>
           <button type="button" class="pri" id="btn-confirm-receipt">✅ Añadir Gasto</button>
         </div>
+        <div id="receipt-error" class="err" role="alert" hidden></div>
       </div>
     </div>
   </div>
 
-  <!-- Librería PDF.js para lectura de comprobantes PDF -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-
   <!-- Módulos JavaScript -->
   <script src="./js/state.js"></script>
   <script src="./js/recurring.js"></script>
+  <script src="./js/metrics.js"></script>
   <script src="./js/chart.js"></script>
   <script src="./js/scanner.js"></script>
   <script src="./js/app.js"></script>
 </body>
 </html>
+

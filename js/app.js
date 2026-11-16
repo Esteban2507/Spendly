@@ -20,16 +20,23 @@
     sumExpenses,
     formatCurrency,
     loadState,
-    saveState,
+    persistChangeAsync,
+    replaceStateAsync,
+    getStorageStatus,
+    syncState,
+    getBudget,
+    setBudget,
+    hasFinancialData,
+    isValidDate,
     exportMonthCsv,
     exportEvolutionCsv,
     exportBackup,
     detectDefaultCurrency,
     parseAmount,
     sanitizeState,
-    applyState,
     Recurring,
-    Chart
+    Chart,
+    Metrics
   } = window.Spendly;
 
   const $ = (id) => document.getElementById(id);
@@ -47,6 +54,8 @@
   let searchTerm = "";
   let selectedCategoryChip = "Comida";
   let editingId = null; // id del gasto que se está editando (null = alta nueva)
+  let editingSnapshot = null;
+  const budgetDrafts = new Map();
 
   // --------------------------------------------------------------------------
   // Sistema de Notificaciones Toast
@@ -76,7 +85,8 @@
   const THEME_KEY = "spendly-theme";
 
   function initTheme() {
-    const savedTheme = localStorage.getItem(THEME_KEY) || "auto";
+    let savedTheme = "auto";
+    try { savedTheme = localStorage.getItem(THEME_KEY) || "auto"; } catch (_) {}
     applyTheme(savedTheme);
 
     const themeBtn = $("theme-btn");
@@ -89,7 +99,7 @@
         else next = "auto";
 
         applyTheme(next);
-        localStorage.setItem(THEME_KEY, next);
+        try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
         showToast(
           next === "dark" ? "Modo oscuro activado 🌙" : next === "light" ? "Modo claro activado ☀️" : "Tema del sistema 💻",
           "info"
@@ -120,22 +130,44 @@
     const tabContents = document.querySelectorAll(".tab-content");
 
     tabButtons.forEach((btn) => {
+      const name = btn.dataset.tab;
+      btn.id = `nav-${name}`;
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-controls", `tab-${name}`);
+      btn.setAttribute("aria-selected", String(btn.classList.contains("active")));
+      btn.tabIndex = btn.classList.contains("active") ? 0 : -1;
+      const panel = $(`tab-${name}`);
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", btn.id);
       btn.onclick = () => {
         const targetTab = btn.getAttribute("data-tab");
 
-        tabButtons.forEach((b) => b.classList.remove("active"));
+        tabButtons.forEach((b) => {
+          b.classList.remove("active");
+          b.setAttribute("aria-selected", "false");
+          b.tabIndex = -1;
+        });
         tabContents.forEach((c) => c.classList.remove("active"));
 
         btn.classList.add("active");
+        btn.setAttribute("aria-selected", "true");
+        btn.tabIndex = 0;
         const activeContent = $(`tab-${targetTab}`);
         if (activeContent) {
           activeContent.classList.add("active");
         }
 
-        // Si se cambia a la pestaña del gráfico de evolución, redibujar para tamaño correcto
-        if (targetTab === "summary") {
-          setTimeout(renderEvolutionSection, 50);
-        }
+        render();
+      };
+      btn.onkeydown = (event) => {
+        const buttons = Array.from(tabButtons);
+        const index = buttons.indexOf(btn);
+        let target;
+        if (event.key === "ArrowRight") target = buttons[(index + 1) % buttons.length];
+        if (event.key === "ArrowLeft") target = buttons[(index + buttons.length - 1) % buttons.length];
+        if (event.key === "Home") target = buttons[0];
+        if (event.key === "End") target = buttons[buttons.length - 1];
+        if (target) { event.preventDefault(); target.click(); target.focus(); }
       };
     });
   }
@@ -170,6 +202,7 @@
       if (name === selectedCategoryChip) {
         chip.classList.add("active");
       }
+      chip.setAttribute("aria-pressed", String(name === selectedCategoryChip));
 
       chip.dataset.cat = name;
       chip.onclick = () => selectCategory(name);
@@ -184,12 +217,14 @@
     if (catSelect) catSelect.value = name;
     document.querySelectorAll("#cat-chips .chip-btn").forEach((c) => {
       c.classList.toggle("active", c.dataset.cat === name);
+      c.setAttribute("aria-pressed", String(c.dataset.cat === name));
     });
   }
 
   // Modo edición: reutiliza el formulario de "Registrar Nuevo Gasto"
   function setEditMode(expense) {
     editingId = expense ? expense.id : null;
+    editingSnapshot = expense ? JSON.stringify(expense) : null;
     $("edit-banner").hidden = !expense;
     $("edit-banner-text").textContent = expense ? `✏️ Editando «${expense.desc}»` : "";
     $("add").textContent = expense ? "💾 Guardar cambios" : "＋ Añadir Gasto";
@@ -223,14 +258,22 @@
     showToast(result === "shared" ? `${label} compartid${end}` : `${label} descargad${end}`, "success", "📥");
   }
 
-  function persistAndNotify() {
-    const success = saveState();
-    const statusEl = $("status");
-    if (statusEl) {
-      statusEl.textContent = success
-        ? "Guardado en este dispositivo"
-        : "No se pudo guardar localmente";
-    }
+  function updateStorageStatus() {
+    const status = getStorageStatus();
+    $("status").textContent = status.ok ? "Guardado en este dispositivo" : "El último cambio no se guardó";
+    $("storage-error").hidden = status.ok;
+    $("storage-error").textContent = status.error || "";
+  }
+
+  async function persistAndNotify(mutator, options) {
+    const success = await persistChangeAsync(mutator || (() => {}), options);
+    updateStorageStatus();
+    if (!success) showToast(getStorageStatus().error || "No se pudo guardar. Conservá los datos del formulario e intentá nuevamente.", "error", "⚠️");
+    return success;
+  }
+
+  function isVisible(tab) {
+    return $(`tab-${tab}`).classList.contains("active");
   }
 
   // --------------------------------------------------------------------------
@@ -245,105 +288,130 @@
     });
     $("mlabel").textContent = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
 
-    // Gastos del mes seleccionado
-    const currentExpenses = State.expenses.filter((e) => e.date.startsWith(currentMonth));
-    const totalSpent = sumExpenses(currentExpenses);
-
-    // Comparación con el mes anterior
-    const prevMonthStr = shiftMonth(currentMonth, -1);
-    const prevExpenses = State.expenses.filter((e) => e.date.startsWith(prevMonthStr));
-    const prevTotal = sumExpenses(prevExpenses);
-
-    // 1. Tarjeta Hero Resumen Dinámica
+    const summary = Metrics.summarize(currentMonth);
+    const { expenses: currentExpenses, total: totalSpent, budget, byCategory } = summary;
     $("hero-total").textContent = formatCurrency(totalSpent);
-
-    const heroDelta = $("hero-delta");
-    if (prevTotal > 0) {
-      const p = Math.round(((totalSpent - prevTotal) / prevTotal) * 100);
-      heroDelta.textContent = `${p >= 0 ? "+" : ""}${p} % frente al mes anterior`;
-      heroDelta.style.background = p > 0 ? "rgba(239, 68, 68, 0.25)" : "rgba(16, 185, 129, 0.25)";
-    } else {
-      heroDelta.textContent = "Sin datos de mes anterior";
-      heroDelta.style.background = "rgba(255, 255, 255, 0.18)";
-    }
-
-    // Cálculo de métricas secundarias para el Hero
-    const budgetVal = Number(State.budget) || 0;
-    const remainingBudget = budgetVal - totalSpent;
-
-    const heroBudgetVal = $("hero-metric-budget");
-    if (heroBudgetVal) {
-      if (budgetVal > 0) {
-        heroBudgetVal.textContent =
-          remainingBudget >= 0
-            ? `${formatCurrency(remainingBudget)} libre`
-            : `${formatCurrency(Math.abs(remainingBudget))} excedido ⚠️`;
-      } else {
-        heroBudgetVal.textContent = "Sin definir";
-      }
-    }
-
-    // Promedio diario del mes actual
-    const now = new Date();
-    const isCurrentCalendarMonth = ymOf(now) === currentMonth;
-    const daysCount = isCurrentCalendarMonth
-      ? Math.max(1, now.getDate())
-      : new Date(y, mo, 0).getDate();
-    const dailyAverage = totalSpent / daysCount;
-
-    const heroDailyVal = $("hero-metric-daily");
-    if (heroDailyVal) {
-      heroDailyVal.textContent = `${formatCurrency(dailyAverage)} / día`;
-    }
-
-    // Categoría top del mes
-    const byCategory = {};
-    currentExpenses.forEach((e) => {
-      byCategory[e.cat] = (byCategory[e.cat] || 0) + Number(e.amount);
-    });
+    const delta = $("hero-delta");
+    delta.textContent = summary.comparisonPercent === null
+      ? `Sin base comparable · ${summary.comparisonLabel}`
+      : `${summary.comparisonPercent >= 0 ? "+" : ""}${summary.comparisonPercent} % · ${summary.comparisonLabel}`;
+    delta.style.background = summary.comparisonPercent > 0 ? "rgba(239,68,68,.25)" : "rgba(255,255,255,.18)";
+    const remaining = budget.total - totalSpent;
+    $("hero-metric-budget").textContent = budget.total > 0
+      ? `${formatCurrency(Math.abs(remaining))} ${remaining >= 0 ? "libre" : "excedido"}` : "Sin definir";
+    $("hero-metric-daily").textContent = summary.dailyAverage === null ? "—" : `${formatCurrency(summary.dailyAverage)} / día`;
     const sortedCats = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
-    const topCatEl = $("hero-metric-top");
-    if (topCatEl) {
-      if (sortedCats.length > 0) {
-        const [topName, topAmt] = sortedCats[0];
-        topCatEl.textContent = `${CAT_ICONS[topName] || "•"} ${topName} (${formatCurrency(topAmt)})`;
-      } else {
-        topCatEl.textContent = "Ninguna aún";
-      }
+    $("hero-metric-top").textContent = sortedCats.length
+      ? `${CAT_ICONS[sortedCats[0][0]]} ${sortedCats[0][0]} (${formatCurrency(sortedCats[0][1])})` : "Ninguna aún";
+    $("hero-projection").textContent = summary.projectedTotal === null ? "—" : formatCurrency(summary.projectedTotal);
+    $("projection-note").textContent = summary.projectionLabel;
+    $("hero-pending").textContent = formatCurrency(summary.pendingTotal);
+    $("hero-available").textContent = summary.availablePerDay === null ? "—" : formatCurrency(summary.availablePerDay);
+    $("available-note").textContent = !budget.total ? "Definí un presupuesto mensual" : summary.daysRemaining
+      ? `${summary.daysRemaining} días; descuenta los recurrentes pendientes` : "Mes cerrado";
+    const ratio = budget.total > 0 ? totalSpent / budget.total : 0;
+    $("bfill").style.width = `${Math.min(100, ratio * 100)}%`;
+    $("bfill").style.background = ratio > 1 ? "var(--danger)" : ratio > .8 ? "var(--warn)" : "var(--ac)";
+    $("bsub").textContent = budget.total > 0
+      ? `${Math.round(ratio * 100)} % consumido · ${formatCurrency(Math.abs(remaining))} ${remaining >= 0 ? "disponible" : "excedido"}`
+      : "Definí un presupuesto para este mes";
+    refreshBudgetFields();
+    if (isVisible("summary")) {
+      renderCategoryBreakdown(sortedCats, totalSpent);
+      renderCategoryBudgets(byCategory, budget);
+      renderPending(summary.pending);
+      renderEvolutionSection();
     }
+    if (isVisible("movements")) renderMovementsList(currentExpenses);
+    if (isVisible("recurring")) renderRecurringSection();
+    updateStorageStatus();
+  }
 
-    // 2. Barra de Presupuesto en Ajustes/Resumen
-    const bFill = $("bfill");
-    const bSub = $("bsub");
-    if (budgetVal > 0) {
-      const ratio = totalSpent / budgetVal;
-      bFill.style.width = Math.min(100, ratio * 100) + "%";
-      bFill.style.background =
-        ratio > 1
-          ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
-          : ratio > 0.8
-          ? "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-          : "linear-gradient(135deg, #10b981 0%, #0d9488 100%)";
+  function renderPending(pending) {
+    $("pending-card").hidden = pending.length === 0;
+    $("pending-list").replaceChildren();
+    pending.forEach((item) => {
+      const row = createElement("div", "pending-item");
+      row.append(createElement("span", null, `${item.date.slice(8)}/${item.date.slice(5, 7)} · ${item.desc}${item.ambiguous ? " · Revisar coincidencias" : ""}`), createElement("b", null, formatCurrency(item.amount)));
+      $("pending-list").appendChild(row);
+    });
+  }
 
-      if (ratio > 1) {
-        bSub.textContent = `🚨 Te has excedido por ${formatCurrency(totalSpent - budgetVal)}`;
-        bSub.style.color = "var(--danger)";
-      } else {
-        const usedPercent = Math.round(ratio * 100);
-        bSub.textContent = `✅ Te quedan ${formatCurrency(remainingBudget)} (${usedPercent} % consumido)`;
-        bSub.style.color = "var(--mut)";
-      }
-    } else {
-      bFill.style.width = "0%";
-      bSub.textContent = "Define un presupuesto para medir tu progreso mensual";
-      bSub.style.color = "var(--mut)";
+  function renderCategoryBudgets(byCategory, budget) {
+    const container = $("category-budgets-summary");
+    container.replaceChildren();
+    Object.entries(budget.categories).forEach(([cat, limit]) => {
+      if (!(limit > 0)) return;
+      const spent = byCategory[cat] || 0;
+      const row = createElement("div", "category-budget-row");
+      row.appendChild(createElement("span", null, `${CAT_ICONS[cat]} ${cat}: ${formatCurrency(spent)} de ${formatCurrency(limit)}`));
+      const progress = document.createElement("progress");
+      progress.max = limit;
+      progress.value = Math.min(spent, limit);
+      progress.setAttribute("aria-label", `Presupuesto de ${cat}`);
+      row.appendChild(progress);
+      if (spent > limit) row.appendChild(createElement("span", "err", `Excedido por ${formatCurrency(spent - limit)}`));
+      container.appendChild(row);
+    });
+  }
+
+  function initBudgetFields() {
+    CATS.forEach(([cat, , icon], index) => {
+      const label = createElement("label", "budget-field", `${icon} ${cat}`);
+      const input = document.createElement("input");
+      input.id = `category-budget-${index}`;
+      input.inputMode = "decimal";
+      input.placeholder = "Sin límite";
+      input.dataset.category = cat;
+      input.oninput = rememberBudgetDraft;
+      label.appendChild(input);
+      $("category-budget-fields").appendChild(label);
+    });
+  }
+
+  function refreshBudgetFields() {
+    const budget = getBudget(currentMonth);
+    const draft = budgetDrafts.get(currentMonth);
+    $("budget-month-label").textContent = Chart.getMonthName(currentMonth);
+    $("budget").value = draft ? draft.total : budget.total || "";
+    document.querySelectorAll("#category-budget-fields input").forEach((input) => {
+      input.value = draft ? draft.categories[input.dataset.category] || "" : budget.categories[input.dataset.category] || "";
+    });
+    $("cur").value = State.currency;
+    $("cur").disabled = hasFinancialData();
+    $("currency-note").textContent = hasFinancialData()
+      ? `Todos los importes están expresados en ${State.currency}. La moneda queda fija mientras existan movimientos, reglas o presupuestos; no se realizan conversiones.`
+      : "Elegí la moneda antes de registrar importes. Spendly utiliza una sola moneda y no realiza conversiones.";
+  }
+
+  function rememberBudgetDraft() {
+    const previous = budgetDrafts.get(currentMonth);
+    const categories = {};
+    document.querySelectorAll("#category-budget-fields input").forEach((input) => { categories[input.dataset.category] = input.value; });
+    budgetDrafts.set(currentMonth, { total: $("budget").value, categories,
+      base: previous ? previous.base : JSON.stringify(getBudget(currentMonth)) });
+  }
+
+  async function saveBudgetForm() {
+    const budgetMonth = currentMonth;
+    const initialBudget = budgetDrafts.get(budgetMonth)?.base || JSON.stringify(getBudget(budgetMonth));
+    const total = $("budget").value.trim() ? parseAmount($("budget").value) : 0;
+    const categories = {};
+    let valid = Number.isFinite(total) && total >= 0;
+    document.querySelectorAll("#category-budget-fields input").forEach((input) => {
+      const value = input.value.trim() ? parseAmount(input.value) : 0;
+      if (!Number.isFinite(value) || value < 0) valid = false;
+      if (value > 0) categories[input.dataset.category] = Math.round(value * 100) / 100;
+    });
+    if (!valid) { showToast("Ingresá importes válidos y mayores o iguales a cero.", "error", "⚠️"); return; }
+    if (await persistAndNotify(() => {
+      if (JSON.stringify(getBudget(budgetMonth)) !== initialBudget) throw new Error("El presupuesto cambió en otra pestaña. Copiá tu borrador y recargá para revisar los valores actuales.");
+      setBudget(budgetMonth, Math.round(total * 100) / 100, categories);
+    })) {
+      budgetDrafts.delete(budgetMonth);
+      render();
+      showToast(`Presupuesto de ${Chart.getMonthName(budgetMonth)} guardado`, "success", "🎯");
     }
-
-    // 3. Renderizar componentes de vistas
-    renderCategoryBreakdown(sortedCats, totalSpent);
-    renderMovementsList(currentExpenses);
-    renderRecurringSection();
-    renderEvolutionSection();
   }
 
   // Desglose de categorías con barras y avatares con emoji
@@ -459,16 +527,20 @@
       const delBtn = createElement("button", "del-btn", "🗑️");
       delBtn.title = "Eliminar este gasto";
       delBtn.setAttribute("aria-label", `Eliminar gasto ${item.desc}`);
-      delBtn.onclick = () => {
+      delBtn.onclick = async () => {
         const ok = window.confirm(
           `¿Deseas eliminar "${item.desc}" (${formatCurrency(item.amount)})?`
         );
         if (ok) {
-          if (editingId === item.id) setEditMode(null);
-          State.expenses = State.expenses.filter((x) => x.id !== item.id);
-          persistAndNotify();
-          render();
-          showToast(`Gasto "${item.desc}" eliminado`, "info", "🗑️");
+          if (await persistAndNotify(() => {
+            const target = State.expenses.find((x) => x.id === item.id);
+            if (target && JSON.stringify(target) !== JSON.stringify(item)) throw new Error("El gasto cambió en otra pestaña. Revisalo antes de eliminarlo.");
+            State.expenses = State.expenses.filter((x) => x.id !== item.id);
+          })) {
+            if (editingId === item.id) setEditMode(null);
+            render();
+            showToast(`Gasto "${item.desc}" eliminado`, "info", "🗑️");
+          }
         }
       };
 
@@ -512,27 +584,28 @@
       const btnYes = createElement("button", "pri", "Sí, repetir cada mes");
       const btnNo = createElement("button", null, "Descartar");
 
-      btnYes.onclick = () => {
-        State.recurring.push({
-          id: uid(),
-          desc: sug.desc,
-          amount: sug.amount,
-          cat: sug.cat,
-          day: sug.day,
-          from: ymOf(new Date()),
-          done: []
-        });
-        Recurring.apply();
-        persistAndNotify();
-        render();
-        showToast(`"${sug.desc}" añadido a gastos recurrentes`, "success", "🔄");
+      btnYes.onclick = async () => {
+        if (btnYes.disabled) return;
+        btnYes.disabled = true;
+        let recurringResult;
+        try { if (await persistAndNotify(() => {
+          const key = window.Spendly.normalizeText(sug.desc);
+          if (State.recurring.some((rule) => window.Spendly.normalizeText(rule.desc) === key)) throw new Error("Este gasto ya tiene una regla recurrente. Revisá la lista actualizada.");
+          State.recurring.push({ id: uid(), desc: sug.desc, amount: sug.amount, cat: sug.cat,
+            day: sug.day, from: ymOf(new Date()), done: [] });
+          recurringResult = Recurring.apply();
+        }, { refresh: true })) {
+          render();
+          showToast(`"${sug.desc}" añadido a gastos recurrentes`, "success", "🔄");
+          notifyRecurringAmbiguity(recurringResult);
+        } } finally { btnYes.disabled = false; }
       };
 
-      btnNo.onclick = () => {
-        State.dismissed.push(sug.key);
-        persistAndNotify();
-        render();
-        showToast("Sugerencia descartada", "info", "👍");
+      btnNo.onclick = async () => {
+        if (await persistAndNotify(() => State.dismissed.push(sug.key))) {
+          render();
+          showToast("Sugerencia descartada", "info", "👍");
+        }
       };
 
       actions.appendChild(btnYes);
@@ -557,24 +630,29 @@
       amountInput.step = "0.01";
       amountInput.value = rule.amount;
       amountInput.style.width = "105px";
+      amountInput.setAttribute("aria-label", `Importe mensual de ${rule.desc}`);
 
-      amountInput.onchange = () => {
-        const val = parseFloat(amountInput.value);
-        if (val > 0) {
-          rule.amount = Math.round(val * 100) / 100;
-          persistAndNotify();
-          showToast(`Importe de "${rule.desc}" actualizado`, "success");
+      amountInput.onchange = async () => {
+        const val = parseAmount(amountInput.value);
+        if (Number.isFinite(val) && Math.round(val * 100) > 0) {
+          if (await persistAndNotify(() => {
+            const current = State.recurring.find((r) => r.id === rule.id);
+            if (current) current.amount = Math.round(val * 100) / 100;
+          })) {
+            render();
+            showToast(`Importe de "${rule.desc}" actualizado`, "success");
+          } else amountInput.value = rule.amount;
         } else {
           amountInput.value = rule.amount;
         }
       };
 
       const cancelBtn = createElement("button", null, "Dejar de repetir");
-      cancelBtn.onclick = () => {
-        State.recurring = State.recurring.filter((r) => r.id !== rule.id);
-        persistAndNotify();
-        render();
-        showToast(`Se canceló la regla recurrente de "${rule.desc}"`, "info");
+      cancelBtn.onclick = async () => {
+        if (await persistAndNotify(() => { State.recurring = State.recurring.filter((r) => r.id !== rule.id); })) {
+          render();
+          showToast(`Se canceló la regla recurrente de "${rule.desc}"`, "info");
+        }
       };
 
       row.appendChild(info);
@@ -596,6 +674,7 @@
 
   // Gráfico de evolución
   function renderEvolutionSection() {
+    if (!isVisible("summary")) return;
     Chart.render({
       chartContainer: $("evo"),
       statsContainer: $("evostats"),
@@ -614,80 +693,134 @@
   // --------------------------------------------------------------------------
   // Agregar Nuevo Gasto
   // --------------------------------------------------------------------------
-  function handleAddExpense() {
-    const descInput = $("desc");
-    const amtInput = $("amt");
-    const dateInput = $("date");
-    const recCheckbox = $("rec");
-    const errBox = $("err");
-
-    const desc = descInput.value.trim();
-    const amountVal = parseAmount(amtInput.value);
-    const dateVal = dateInput.value;
-    const catVal = selectedCategoryChip || $("cat").value;
-
-    if (!desc || !(amountVal > 0) || !dateVal) {
-      errBox.textContent = "⚠️ Completa la descripción, un importe mayor a 0 y una fecha válida.";
+  async function handleAddExpense() {
+    const button = $("add");
+    if (button.disabled) return;
+    const desc = $("desc").value.trim();
+    const amountVal = parseAmount($("amt").value);
+    const dateVal = $("date").value;
+    const catVal = selectedCategoryChip;
+    if (!desc || !Number.isFinite(amountVal) || Math.round(amountVal * 100) <= 0 || !isValidDate(dateVal)) {
+      $("err").textContent = "Completá la descripción, un importe mayor a cero y una fecha válida.";
       return;
     }
-
-    errBox.textContent = "";
     const amount = Math.round(amountVal * 100) / 100;
-
-    // --- Edición de un gasto existente ---
-    if (editingId) {
-      const target = State.expenses.find((x) => x.id === editingId);
-      if (target) Object.assign(target, { desc, amount, cat: catVal, date: dateVal });
+    const editing = editingId;
+    const originalExpense = editingSnapshot;
+    const repeat = $("rec").checked && !editing;
+    let result = { added: 0 };
+    button.disabled = true;
+    try {
+      const success = await persistAndNotify(() => {
+        if (editing) {
+          const target = State.expenses.find((item) => item.id === editing);
+          if (!target) throw new Error("El gasto ya no existe. Revisá los movimientos antes de editar.");
+          if (JSON.stringify(target) !== originalExpense) throw new Error("El gasto cambió en otra pestaña. Tus datos siguen en el formulario; revisá el movimiento antes de guardar.");
+          Object.assign(target, { desc, amount, cat: catVal, date: dateVal });
+          // Cambiar comercio, fecha o importe requiere volver a verificar un posible duplicado.
+          delete target.receiptFingerprint;
+        } else {
+          const id = uid();
+          const expense = { id, desc, amount, cat: catVal, date: dateVal };
+          State.expenses.push(expense);
+          if (repeat) {
+            const month = dateVal.slice(0, 7);
+            const nowMonth = ymOf(new Date());
+            const start = month > nowMonth ? month : nowMonth;
+            const rid = uid();
+            if (month === start) expense.rid = rid;
+            State.recurring.push({ id: rid, desc, amount, cat: catVal, day: Number(dateVal.slice(8)), from: start, done: month === start ? [month] : [] });
+            result = Recurring.apply();
+          }
+        }
+      });
+      if (!success) return;
       setEditMode(null);
       currentMonth = dateVal.slice(0, 7);
-      persistAndNotify();
       render();
-      showToast(`Gasto «${desc}» actualizado`, "success", "✏️");
+      $("desc").focus();
+      showToast(editing ? `Gasto «${desc}» actualizado` : `Gasto de ${formatCurrency(amount)} guardado${repeat ? "; repetición mensual activada" : ""}`, "success", editing ? "✏️" : "🎉");
+      notifyRecurringAmbiguity(result);
+    } finally { button.disabled = false; }
+  }
+
+  function notifyRecurringAmbiguity(result) {
+    if (result.ambiguous && result.ambiguous.length) showToast("Hay recurrentes con varias coincidencias manuales. Revisá los pendientes antes de registrarlos.", "info", "⚠️");
+  }
+
+  async function applyRecurringDue() {
+    let result = { added: 0 };
+    const saved = await persistChangeAsync(() => {
+      result = Recurring.apply();
+      // Examinar todo el historial de reglas; un vencimiento futuro de este mes
+      // no debe ocultar cargos pendientes de meses anteriores.
+      return result.changed;
+    }, { refresh: true });
+    updateStorageStatus();
+    if (!saved && !getStorageStatus().ok) showToast(getStorageStatus().error, "error", "⚠️");
+    return saved ? result : { ...result, added: 0 };
+  }
+
+  async function initOfflineReader() {
+    const button = $("prepare-offline");
+    const status = $("offline-status");
+    if (!("serviceWorker" in navigator) || location.protocol === "file:") {
+      button.disabled = true;
+      status.textContent = "Abrí Spendly mediante HTTPS o localhost para preparar el lector.";
       return;
     }
-
-    // --- Alta nueva ---
-    State.expenses.push({ id: uid(), desc, amount, cat: catVal, date: dateVal });
-
-    let recurringNote = "";
-    if (recCheckbox.checked) {
-      // La regla empieza este mes (o el mes del gasto si es futuro): nunca rellena meses pasados.
-      const expMonth = dateVal.slice(0, 7);
-      const nowMonth = ymOf(new Date());
-      const startMonth = expMonth > nowMonth ? expMonth : nowMonth;
-      State.recurring.push({
-        id: uid(),
-        desc,
-        amount,
-        cat: catVal,
-        day: Number(dateVal.slice(8)),
-        from: startMonth,
-        done: expMonth === startMonth ? [expMonth] : []
+    let registration;
+    function request(type) {
+      return new Promise((resolve, reject) => {
+        const worker = registration.active || navigator.serviceWorker.controller;
+        if (!worker) { reject(new Error("El lector todavía se está preparando. Recargá la aplicación e intentá nuevamente.")); return; }
+        const channel = new MessageChannel();
+        let timer;
+        function finish(error, result) {
+          clearTimeout(timer);
+          channel.port1.close();
+          if (error) reject(error); else resolve(result);
+        }
+        const resetTimeout = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => finish(new Error("No hubo respuesta. Cerrá las otras pestañas de Spendly y volvé a abrir la aplicación.")), type === "SCANNER_OFFLINE_STATUS" ? 7000 : 90000);
+        };
+        channel.port1.onmessage = ({ data }) => {
+          if (data.type === "SCANNER_OFFLINE_PROGRESS") {
+            status.textContent = `Descargando lector: ${data.cached} de ${data.total} componentes…`;
+            resetTimeout();
+          } else if (data.type === "SCANNER_OFFLINE_ERROR") finish(new Error(data.error || "No se pudo descargar el lector."));
+          else finish(null, data);
+        };
+        resetTimeout();
+        worker.postMessage({ type }, [channel.port2]);
       });
-      recCheckbox.checked = false;
-      const res = Recurring.apply();
-      recurringNote =
-        expMonth < nowMonth
-          ? ` Se repetirá cada mes desde ${Chart.getMonthName(startMonth).toLowerCase()}.`
-          : " Se repetirá cada mes.";
-      if (res.added > 0) recurringNote += " Ya se añadió el de este mes.";
     }
-
-    currentMonth = dateVal.slice(0, 7);
-
-    descInput.value = "";
-    amtInput.value = "";
-    descInput.focus();
-
-    persistAndNotify();
-    render();
-    showToast(`¡Gasto de ${formatCurrency(amount)} añadido!${recurringNote}`, "success", "🎉");
+    try {
+      registration = await navigator.serviceWorker.register("./sw.js");
+      if (!registration.active) await navigator.serviceWorker.ready;
+      const result = await request("SCANNER_OFFLINE_STATUS");
+      status.textContent = result.ready ? "Lector preparado para este dispositivo, incluso sin conexión." : "El lector requiere descargar sus componentes (aprox. 15 MB).";
+      button.disabled = !!result.ready;
+      if (registration.waiting) status.textContent += " Hay una actualización: cerrá todas las pestañas de Spendly y abrila nuevamente.";
+    } catch (error) { status.textContent = error.message || "No se pudo preparar el funcionamiento sin conexión."; }
+    button.onclick = async () => {
+      if (!registration) { status.textContent = "Recargá Spendly con conexión e intentá nuevamente."; return; }
+      button.disabled = true;
+      status.textContent = "Descargando componentes del lector…";
+      try {
+        const result = await request("PREPARE_SCANNER_OFFLINE");
+        if (!result.ready) throw new Error("La descarga no se completó. Intentá nuevamente con conexión.");
+        status.textContent = "Lector preparado para este dispositivo, incluso sin conexión.";
+        showToast("Lector preparado sin conexión", "success", "📴");
+      } catch (error) { status.textContent = error.message; button.disabled = false; }
+    };
   }
 
   // --------------------------------------------------------------------------
   // Inicialización de la Aplicación
   // --------------------------------------------------------------------------
-  function init() {
+  async function init() {
     initTheme();
     initTabs();
     const loadInfo = loadState();
@@ -708,9 +841,11 @@
     });
 
     initCategoryChips();
+    initBudgetFields();
+    $("cat").onchange = () => selectCategory($("cat").value);
 
     $("date").value = today();
-    $("budget").value = State.budget > 0 ? State.budget : "";
+    refreshBudgetFields();
     $("cur").value = State.currency || detectDefaultCurrency();
 
     // Navegación de mes
@@ -734,7 +869,7 @@
     });
 
     // Filtros
-    filterSelect.onchange = render;
+    filterSelect.onchange = () => renderMovementsList(State.expenses.filter((item) => item.date.startsWith(currentMonth)));
 
     const searchInput = $("search");
     if (searchInput) {
@@ -744,19 +879,25 @@
       };
     }
 
-    // Presupuesto y moneda
-    $("budget").onchange = () => {
-      State.budget = Math.max(0, parseFloat($("budget").value) || 0);
-      persistAndNotify();
-      render();
-      showToast("Presupuesto mensual actualizado", "success", "🎯");
+    // Presupuesto independiente por mes y moneda única de registro.
+    $("save-budget").onclick = saveBudgetForm;
+    $("budget").oninput = rememberBudgetDraft;
+    $("copy-budget").onclick = () => {
+      const previous = getBudget(shiftMonth(currentMonth, -1));
+      $("budget").value = previous.total || "";
+      document.querySelectorAll("#category-budget-fields input").forEach((input) => {
+        input.value = previous.categories[input.dataset.category] || "";
+      });
+      rememberBudgetDraft();
+      showToast("Presupuesto anterior copiado al formulario. Guardalo para aplicarlo a este mes.", "info", "📋");
     };
-
-    $("cur").onchange = () => {
-      State.currency = $("cur").value;
-      persistAndNotify();
-      render();
-      showToast(`Divisa cambiada a ${State.currency}`, "info", "💱");
+    $("cur").onchange = async () => {
+      const currency = $("cur").value;
+      if (hasFinancialData()) { refreshBudgetFields(); return; }
+      if (await persistAndNotify(() => { State.currency = currency; })) {
+        render();
+        showToast(`Moneda de registro: ${State.currency}`, "info", "💱");
+      }
     };
 
     // Exportaciones CSV
@@ -765,7 +906,7 @@
     };
 
     $("csvevo").onclick = () => {
-      const months = Chart.getLastMonths(evolutionRange);
+      const months = Chart.getLastMonths(evolutionRange, currentMonth);
       exportEvolutionCsv(months).then((r) => notifyExport(r, "CSV de evolución"));
     };
 
@@ -808,11 +949,12 @@
         );
         if (!ok) return;
 
+        const restored = await replaceStateAsync(clean);
+        updateStorageStatus();
+        if (!restored) { showToast(getStorageStatus().error, "error", "⚠️"); return; }
+        budgetDrafts.clear();
         setEditMode(null);
-        applyState(clean);
-
-        persistAndNotify();
-        $("budget").value = State.budget > 0 ? State.budget : "";
+        refreshBudgetFields();
         $("cur").value = State.currency;
         render();
         showToast("¡Respaldo restaurado con éxito!", "success", "✨");
@@ -821,21 +963,32 @@
       }
     };
 
-    const recurringResult = Recurring.apply();
-    if (recurringResult.changed) saveState();
+    let recurringResult = { added: 0 };
+    if (!loadInfo.error) recurringResult = await applyRecurringDue();
 
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
     }
 
-    if ("serviceWorker" in navigator && location.protocol !== "file:") {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js").catch(() => {});
-      });
-    }
+    initOfflineReader();
+    window.addEventListener("storage", (event) => {
+      if (event.key !== window.Spendly.STORAGE_KEY && event.key !== null) return;
+      const result = syncState();
+      updateStorageStatus();
+      if (result.changed) { render(); showToast("Datos actualizados desde otra pestaña", "info", "🔄"); }
+      if (result.conflict) showToast(getStorageStatus().error, "error", "⚠️");
+    });
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState !== "visible") return;
+      const synced = syncState();
+      if (!synced.error && !synced.conflict) notifyRecurringAmbiguity(await applyRecurringDue());
+      render();
+    });
 
     render();
 
+    notifyRecurringAmbiguity(recurringResult);
+    if (loadInfo.error) showToast(loadInfo.error, "error", "⚠️");
     if (loadInfo.dropped > 0) {
       const n = loadInfo.dropped;
       showToast(
@@ -847,7 +1000,7 @@
     if (recurringResult.added > 0) {
       const n = recurringResult.added;
       showToast(
-        n === 1 ? "Se añadió 1 gasto recurrente de este mes" : `Se añadieron ${n} gastos recurrentes de este mes`,
+        n === 1 ? "Se añadió 1 gasto recurrente pendiente" : `Se añadieron ${n} gastos recurrentes pendientes`,
         "info",
         "🔄"
       );
@@ -868,3 +1021,4 @@
     init();
   }
 })(window);
+
