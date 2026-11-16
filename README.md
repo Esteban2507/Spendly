@@ -1,79 +1,120 @@
 # Spendly
 
-Spendly es una aplicación web progresiva e instalable (PWA) para gestionar tus finanzas personales y gastos mensuales: control de presupuesto, categorías visuales y coloridas, detección inteligente de gastos recurrentes, gráficos de evolución interactivos y exportación de datos a CSV y JSON.
+Aplicación web instalable para registrar gastos personales, definir presupuestos por mes y categoría, revisar comprobantes y seguir cargos recurrentes. Se publica como sitio estático: HTML, CSS y JavaScript, sin servidor de aplicación ni registro de usuario.
 
-No requiere servidor ni registro: todos tus datos se procesan y almacenan de forma 100% privada en tu propio dispositivo (`localStorage`).
+## Uso diario
 
----
+- **Resumen:** gasto del mes, categorías, comparación con el período anterior, proyección de cierre, recurrentes pendientes y disponible diario.
+- **Movimientos:** alta, edición, búsqueda, filtros y exportación CSV.
+- **Recurrentes:** reglas mensuales y sugerencias basadas en al menos tres meses consecutivos con importes y fechas similares.
+- **Ajustes:** presupuesto del mes seleccionado, límites por categoría, moneda del conjunto de datos, respaldos y preparación del lector sin conexión.
 
-## 📁 Estructura del Proyecto
+El selector superior cambia el mes sobre el que se consulta o configura el presupuesto. Guardar un presupuesto de un mes no cambia los anteriores. Al importar un respaldo antiguo, el presupuesto global existente se conserva en los meses con movimientos y en el mes actual; los meses nuevos se configuran por separado.
 
-El código está organizado de manera modular y limpia sin necesidad de compiladores ni herramientas pesadas de empaquetado (Node.js/Webpack):
+Spendly trabaja con **una sola moneda por conjunto de datos**, sin conversión de divisas. La moneda se elige antes de crear movimientos, reglas o presupuestos; después queda fija para evitar que un cambio de etiqueta altere el significado del historial.
 
-```text
-spendly/
-├── index.html              # Estructura semántica con navegación por pestañas dinámicas
-├── manifest.webmanifest    # Configuración PWA (nombre, tema, iconos e instalación)
-├── sw.js                   # Service Worker para funcionamiento sin conexión (spendly-v5)
-├── README.md               # Documentación y guía del proyecto
-├── css/
-│   └── styles.css          # Estilos modernos, paleta cromática viva, componentes y modo oscuro
-├── js/
-│   ├── state.js            # Estado central, categorías con iconos, localStorage y respaldos
-│   ├── recurring.js        # Algoritmo de detección inteligente y automatización mensual
-│   ├── chart.js            # Gráficos SVG interactivos con leyendas de color y estadísticas
-│   └── app.js              # Controlador principal, pestañas, toasts dinámicos y eventos
-└── assets/
-    └── icons/              # Iconos oficiales para Android, iOS y navegadores
-        ├── icon-180.png
-        ├── icon-192.png
-        └── icon-512.png
-```
+## Definiciones de los indicadores
 
----
+| Indicador | Cálculo |
+| --- | --- |
+| Gastado del mes | Suma de los movimientos registrados en ese mes, incluidos los que tengan fecha futura. |
+| Comparación del mes actual | Gasto registrado hasta hoy frente al gasto hasta el mismo día del mes anterior; si el mes anterior tiene menos días, se usa su último día. Los meses cerrados se comparan completos. |
+| Ritmo diario | Gasto registrado hasta hoy dividido por los días transcurridos, incluido hoy. Para meses cerrados se usan todos los días del mes. |
+| Proyección de cierre | Ritmo diario del mes actual multiplicado por sus días totales. Es una estimación basada en lo registrado, no una predicción de cargos futuros. |
+| Recurrentes pendientes | Reglas del mes que todavía no tienen un cargo registrado o una coincidencia válida. |
+| Disponible por día | (Presupuesto mensual − movimientos del mes − recurrentes pendientes) / días restantes, incluido hoy. Puede ser negativo; sin presupuesto o en un mes cerrado no se muestra una cifra. |
 
-## 🎨 Entorno Dinámico y Mejoras Visuales
+Los límites por categoría son independientes del límite total. Los gráficos muestran los datos registrados; un mes sin movimientos no permite saber si no hubo gastos o si faltó registrarlos.
 
-1. **Paleta Cromática Viva y Moderna:**
-   - Categorías con emojis y colores vibrantes (🍔 Comida en naranja cálido, 🚗 Transporte en azul royal, 🏠 Vivienda en violeta, 🎮 Ocio en rosa magenta, 💊 Salud en esmeralda, 🛍️ Compras en ámbar, 📺 Suscripciones en cian y 📦 Otros en pizarra).
-   - Tarjeta *Hero* con gradiente esmeralda, tipografía destacada y métricas clave en tiempo real (gasto total, ritmo diario promedio, presupuesto restante y categoría top).
-2. **Navegación por Pestañas Fluida (Tabs):**
-   - **📊 Resumen:** Dashboard interactivo, gráfico de evolución SVG con navegación por meses al tocar barras y desglose visual.
-   - **💳 Movimientos:** Formulario de registro rápido con selector visual de chips de categoría, buscador en vivo y lista de transacciones estilo tarjeta.
-   - **🔄 Recurrentes:** Detector de suscripciones con sugerencias automáticas y gestión de gastos fijos.
-   - **⚙️ Ajustes:** Modificación del presupuesto base, selección de divisa internacional y copias de seguridad.
-3. **Selector Visual de Categorías (Chips):**
-   - En el formulario de registro de gasto puedes seleccionar la categoría directamente haciendo clic en su botón interactivo con icono y color activo.
-4. **Sistema de Notificaciones Toast Dinámicas:**
-   - Avisos flotantes elegantes y animados ante cada acción (gasto añadido, eliminado, respaldo descargado, cambio de mes o cambio de tema).
-5. **Selector de Tema Dinámico (Claro / Oscuro / Sistema):**
-   - Soporte nativo para modo oscuro profundo (Midnight Blue) y modo claro limpio con persistencia en el dispositivo.
+## Comprobantes PDF e imágenes
 
----
+El lector extrae texto de PDF y utiliza OCR en español para imágenes y páginas escaneadas. Conserva las líneas del PDF y prioriza el total final, evitando usar efectivo entregado, vuelto, impuestos, fechas y números fiscales como importe del gasto.
 
-## 🌐 Publicarla con GitHub Pages (sin usar la terminal)
+- Se admiten archivos de hasta **20 MB** y PDF de hasta **10 páginas**.
+- Siempre se revisan descripción, fecha, categoría e importe antes de guardar.
+- Cuando el importe o la fecha no son fiables, el formulario los deja pendientes e informa el motivo.
+- Se advierte si el archivo ya fue registrado o si coincide comercio, fecha e importe con otro comprobante. La persona decide si corresponde añadirlo.
+- Se guardan el movimiento y sus identificadores de duplicidad. **El archivo y el texto completo del comprobante no se guardan en el historial ni se envían a un servidor.**
 
-1. En [github.com](https://github.com) pulsa **New repository**. Nómbralo (por ejemplo `spendly`), márcalo como **Public** y créalo.
-2. En la pantalla del repositorio pulsa **uploading an existing file** y arrastra todos los archivos y carpetas de este proyecto (`index.html`, `css/`, `js/`, `assets/`, `manifest.webmanifest`, `sw.js`).
-3. Pulsa **Commit changes**.
-4. Ve a **Settings → Pages**. En *Source* elige **Deploy from a branch**, rama **main**, carpeta **/ (root)** y guarda.
-5. En 1 o 2 minutos tu aplicación estará disponible en `https://esteban2507.github.io/Spendly/` (o tu usuario correspondiente).
+PDF.js y Tesseract se descargan desde CDN mediante conexiones HTTPS con versiones fijadas en el código. Esas descargas son solicitudes a terceros para obtener el programa y el idioma de OCR; los comprobantes se procesan localmente. La precisión depende de la calidad y el formato del documento, por lo que la revisión previa sigue siendo necesaria.
 
----
+## Funcionamiento sin conexión y actualizaciones
 
-## 📱 Instalarla en el Teléfono (PWA)
+Después de la primera carga correcta, el Service Worker conserva la interfaz y el código de Spendly para utilizarlos sin conexión.
 
-- **iPhone / iPad:** Abre el enlace en **Safari** → pulsa el botón Compartir → selecciona **Añadir a pantalla de inicio**.
-- **Android:** Abre el enlace en **Chrome** → pulsa el menú de tres puntos (⋮) → selecciona **Instalar aplicación** (o *Añadir a pantalla de inicio*).
+Para leer comprobantes sin red, ir a **Ajustes → Preparar lector sin conexión**, esperar a que termine la descarga de todos sus componentes y comprobar que se indique que está listo. Esta preparación descarga también el idioma español de OCR y puede requerir varios MB. Si falla la red o falta espacio, se puede reintentar; no se informa disponibilidad completa hasta verificar cada componente.
 
----
+El navegador puede eliminar datos de sitios para liberar espacio. El estado del lector comprueba su caché actual; si falta algún componente, hay que prepararlo nuevamente. La preparación cubre el lector, el OCR y su idioma; no incluye recursos adicionales para todos los formatos de PDF. Documentos con CMaps, fuentes especiales o imágenes no compatibles pueden requerir registrar el gasto manualmente.
 
-## 💻 Probarla en tu Computadora Localmente
+Las nuevas versiones se activan al cerrar todas las pestañas y ventanas de Spendly y volver a abrir la app. Esto evita combinar una interfaz anterior con módulos nuevos. La limpieza elimina únicamente cachés propios de Spendly, conservando los de otras aplicaciones del mismo dominio.
 
-Puedes iniciar un servidor web local rápido con Python:
+## Guardado, conflictos y respaldos
 
-```bash
+Los datos se guardan en el navegador mediante localStorage. El programa confirma los cambios solo si pudo persistirlos; si ocurre un fallo, muestra el error y conserva el estado anterior. Los datos ya registrados se pueden descargar como respaldo.
+
+En navegadores con **Web Locks**, las escrituras se serializan entre pestañas: la lectura, la integración y el guardado ocurren dentro del mismo bloqueo. Además, se compara el estado guardado para integrar cambios independientes y detectar ediciones incompatibles del mismo dato.
+
+Si Web Locks no está disponible, se conserva la detección de conflictos, pero localStorage no permite garantizar atomicidad ante escrituras exactamente simultáneas en procesos distintos. En ese caso, conviene trabajar en una sola pestaña. Los conflictos detectados se informan en pantalla; evitar editar el mismo movimiento a la vez sigue siendo la opción más sencilla.
+
+En **Ajustes** se puede descargar un respaldo JSON o restaurar uno. Restaurar reemplaza el conjunto de datos y requiere confirmación. Se validan fechas, importes e identificadores al cargar. Los respaldos antiguos se migran al formato actual.
+
+Descargar respaldos permite transferir el historial a otro navegador o dispositivo y recuperarlo si se borran los datos del sitio. La app no sincroniza cuentas o dispositivos. El tema de color se guarda por separado.
+
+## Estructura
+
+- index.html: interfaz y formularios.
+- css/styles.css: estilos y diseño adaptable.
+- js/state.js: validación, almacenamiento, migraciones, presupuestos y exportación.
+- js/recurring.js: reglas mensuales y detección de patrones.
+- js/metrics.js: cálculos del resumen y agregaciones.
+- js/chart.js: evolución y estadísticas SVG.
+- js/scanner.js: extracción de comprobantes y revisión.
+- js/app.js: navegación, eventos y renderizado.
+- sw.js y manifest.webmanifest: instalación y uso sin conexión.
+- tests/: pruebas de regresión ejecutables con Node.js.
+
+## Ejecutar y verificar
+
+Para servir la app localmente:
+
+~~~bash
 python -m http.server 8000
-```
+~~~
 
-Y abre en tu navegador: [http://localhost:8000](http://localhost:8000).
+Abrir [http://localhost:8000](http://localhost:8000). El Service Worker requiere HTTPS o localhost. Abrir index.html directamente como archivo no reproduce la instalación ni el uso sin conexión.
+
+Para verificar el código, usar **Node.js 24 o superior**. Las pruebas unitarias no requieren paquetes adicionales a Node.js:
+
+~~~bash
+npm run check
+npm test
+~~~
+
+Las mismas comprobaciones se ejecutan en GitHub Actions para los pushes y pull requests. Incluyen persistencia y conflictos, presupuestos, recurrentes, métricas, comprobantes y comportamiento del Service Worker. Las pruebas unitarias no sustituyen la comprobación del OCR, instalación y almacenamiento en los navegadores y dispositivos de destino.
+
+Las pruebas de navegador usan Playwright con Chromium. Para instalar sus herramientas de desarrollo y ejecutarlas:
+
+~~~bash
+npm ci
+npx playwright install chromium
+npm run test:browser
+~~~
+
+Chromium necesita un entorno que permita iniciar sus procesos. En Linux, si faltan bibliotecas del sistema, usar `npx playwright install --with-deps chromium`; este es el comando utilizado en CI. Las pruebas de navegador cubren la interfaz, concurrencia entre pestañas, fallos de guardado, migración de datos y lectura real de PDF e imagen sin conexión tras preparar el lector. Esta preparación requiere acceso inicial a los CDN de PDF.js y Tesseract.
+
+Playwright es una dependencia de desarrollo. La aplicación publicada no tiene dependencias npm en tiempo de ejecución ni necesita Node.js o Playwright en el dispositivo del usuario.
+
+### Comprobación manual en navegador
+
+1. Servir la app en localhost o HTTPS y abrir una ventana nueva. Registrar un gasto y recargar para comprobar que se conserva.
+2. Abrir una segunda pestaña, crear movimientos distintos en ambas y comprobar que se conservan los dos. Revisar que una edición incompatible del mismo movimiento se advierta.
+3. Definir presupuestos distintos en dos meses y comprobar que cada mes conserve el suyo. Revisar el disponible diario frente a los recurrentes pendientes.
+4. Subir un PDF con texto y una imagen de comprobante. Revisar especialmente los totales con miles, efectivo y vuelto. Repetir un archivo y cancelar el aviso de duplicado para comprobar que no se añade otro gasto.
+5. Preparar el lector sin conexión en Ajustes. Esperar la confirmación, activar el modo sin conexión del navegador, recargar y repetir ambas lecturas. Comprobar también un error de preparación y su reintento.
+6. Instalar la PWA en el dispositivo de destino y revisar navegación con teclado, foco del modal, temas y visualización en una pantalla estrecha. Para probar una actualización, cerrar todas las ventanas y volver a abrirla.
+
+## Publicación e instalación
+
+En GitHub Pages, publicar la rama deseada desde la carpeta raíz del repositorio. La URL de este proyecto es [https://esteban2507.github.io/Spendly/](https://esteban2507.github.io/Spendly/).
+
+En Android, abrir la app en un navegador compatible y elegir **Instalar aplicación**. En iPhone/iPad, abrirla en Safari y usar **Compartir → Añadir a pantalla de inicio**.

@@ -17,6 +17,8 @@
     ymOf,
     shiftMonth,
     formatCurrency,
+    getBudget,
+    Metrics,
     LOCALE
   } = window.Spendly;
 
@@ -41,8 +43,8 @@
     return name.charAt(0).toUpperCase() + name.slice(1);
   }
 
-  function getLastMonths(count) {
-    const current = ymOf(new Date());
+  function getLastMonths(count, endMonth = ymOf(new Date())) {
+    const current = endMonth;
     const list = [];
     for (let i = count - 1; i >= 0; i--) {
       list.push(shiftMonth(current, -i));
@@ -71,22 +73,11 @@
     legendContainer.replaceChildren();
     movementContainer.textContent = "";
 
-    const months = getLastMonths(rangeMonths);
-
-    // Totales por categoría por mes
-    const monthlyByCategory = months.map((m) => {
-      const catTotals = {};
-      State.expenses.forEach((e) => {
-        if (e.date.startsWith(m)) {
-          catTotals[e.cat] = (catTotals[e.cat] || 0) + Number(e.amount);
-        }
-      });
-      return catTotals;
-    });
-
-    const monthlyTotals = monthlyByCategory.map((cats) =>
-      Object.values(cats).reduce((sum, val) => sum + val, 0)
-    );
+    const months = getLastMonths(rangeMonths, currentSelectedMonth || ymOf(new Date()));
+    const aggregate = Metrics.aggregateByMonth(State.expenses);
+    const monthlyByCategory = months.map((month) => aggregate.get(month)?.byCategory || Object.create(null));
+    const monthlyTotals = months.map((month) => aggregate.get(month)?.total || 0);
+    const monthlyBudgets = months.map((month) => Number(getBudget(month).total) || 0);
 
     if (!monthlyTotals.some((t) => t > 0)) {
       const emptyDiv = document.createElement("div");
@@ -104,7 +95,7 @@
     const plotWidth = containerWidth - marginLeft - 10;
     const plotHeight = height - marginBottom - marginTop;
 
-    const maxVal = Math.max(...monthlyTotals, Number(State.budget) || 0) * 1.12;
+    const maxVal = Math.max(1, ...monthlyTotals, ...monthlyBudgets) * 1.12;
     const getY = (val) => marginTop + plotHeight - (val / maxVal) * plotHeight;
 
     const compactFmt = new Intl.NumberFormat(LOCALE, {
@@ -273,36 +264,29 @@
       };
     });
 
-    // Línea de meta/presupuesto
-    const budgetVal = Number(State.budget) || 0;
-    if (budgetVal > 0) {
-      const budgetY = getY(budgetVal);
-      createSvgElement(
-        "line",
-        {
-          x1: marginLeft,
-          x2: containerWidth - 4,
-          y1: budgetY,
-          y2: budgetY,
-          stroke: "var(--warn)",
-          "stroke-dasharray": "6 4",
-          "stroke-width": "1.75"
-        },
-        svg
-      );
-      createSvgElement(
-        "text",
-        {
-          x: containerWidth - 6,
-          y: budgetY - 5,
-          "text-anchor": "end",
-          "font-size": "11",
-          "font-weight": "600",
-          style: "fill: var(--warn);"
-        },
-        svg,
-        "🎯 Presupuesto"
-      );
+    // Each month keeps its own budget; missing budgets do not invent a target.
+    months.forEach((month, index) => {
+      const budget = monthlyBudgets[index];
+      if (!(budget > 0)) return;
+      const center = marginLeft + stepWidth * index + stepWidth / 2;
+      const y = getY(budget);
+      const marker = createSvgElement("line", {
+        x1: center - stepWidth * 0.35,
+        x2: center + stepWidth * 0.35,
+        y1: y, y2: y,
+        stroke: "var(--warn)",
+        "stroke-dasharray": "5 3",
+        "stroke-width": "2",
+        "aria-label": `Presupuesto ${getMonthName(month)}: ${formatCurrency(budget)}`
+      }, svg);
+      createSvgElement("title", {}, marker, `Presupuesto ${getMonthName(month)}: ${formatCurrency(budget)}`);
+    });
+    if (monthlyBudgets.some((budget) => budget > 0)) {
+      createSvgElement("text", {
+        x: containerWidth - 6, y: 11,
+        "text-anchor": "end", "font-size": "11",
+        style: "fill: var(--warn); font-weight: 600;"
+      }, svg, "🎯 Presupuesto de cada mes");
     }
 
     // Leyenda de categorías con iconos
@@ -361,10 +345,11 @@
       statsContainer.appendChild(card);
     };
 
+    const calendarMonth = ymOf(new Date());
+    const firstRecordedMonth = Array.from(aggregate.keys()).sort()[0];
     const completedMonths = months
-      .slice(0, -1)
-      .map((m, i) => ({ month: m, total: monthlyTotals[i] }))
-      .filter((x) => x.total > 0);
+      .filter((month) => month < calendarMonth && firstRecordedMonth && month >= firstRecordedMonth)
+      .map((month) => ({ month, total: aggregate.get(month)?.total || 0 }));
 
     if (completedMonths.length > 0) {
       const totalSum = completedMonths.reduce((acc, curr) => acc + curr.total, 0);
@@ -372,21 +357,21 @@
       const highest = completedMonths.reduce((a, b) => (b.total > a.total ? b : a));
       const lowest = completedMonths.reduce((a, b) => (b.total < a.total ? b : a));
 
-      addStatCard("Media mensual", formatCurrency(average), "Meses completos", "⚖️");
+      addStatCard("Media mensual", formatCurrency(average), `${completedMonths.length} meses cerrados desde el primer registro`, "⚖️");
       addStatCard("Mes más alto", formatCurrency(highest.total), getMonthName(highest.month), "🔥");
       addStatCard("Mes más bajo", formatCurrency(lowest.total), getMonthName(lowest.month), "✨");
 
       const last3 = completedMonths.slice(-3);
       const prev3 = completedMonths.slice(-6, -3);
 
-      if (prev3.length > 0) {
+      if (last3.length === 3 && prev3.length === 3) {
         const avgLast3 = last3.reduce((s, x) => s + x.total, 0) / last3.length;
         const avgPrev3 = prev3.reduce((s, x) => s + x.total, 0) / prev3.length;
-        const diffPercent = Math.round(((avgLast3 - avgPrev3) / avgPrev3) * 100);
+        const diffPercent = avgPrev3 > 0 ? Math.round(((avgLast3 - avgPrev3) / avgPrev3) * 100) : null;
         addStatCard(
           "Tendencia",
-          (diffPercent >= 0 ? "+" : "") + diffPercent + " %",
-          "Últimos 3 meses vs anteriores",
+          diffPercent === null ? "Sin base" : (diffPercent >= 0 ? "+" : "") + diffPercent + " %",
+          "3 meses cerrados vs. 3 anteriores",
           diffPercent > 0 ? "📈" : "📉"
         );
       }
@@ -394,35 +379,24 @@
       addStatCard("Meses completos", "—", "Aún no hay ningún mes cerrado con datos", "ℹ️");
     }
 
-    // Variaciones destacadas
-    const totalCount = months.length;
-    if (totalCount > 2 && monthlyTotals[totalCount - 2] > 0 && monthlyTotals[totalCount - 3] > 0) {
-      const lastClosed = monthlyByCategory[totalCount - 2];
-      const prevClosed = monthlyByCategory[totalCount - 3];
-
+    // Compare the latest two closed calendar months in the selected range.
+    if (completedMonths.length >= 2) {
+      const latest = completedMonths[completedMonths.length - 1].month;
+      const previous = completedMonths[completedMonths.length - 2].month;
+      const lastClosed = aggregate.get(latest)?.byCategory || Object.create(null);
+      const prevClosed = aggregate.get(previous)?.byCategory || Object.create(null);
       const categoryDiffs = CATS.map(([catName, _, icon]) => ({
-        cat: catName,
-        icon: icon,
+        cat: catName, icon,
         diff: (lastClosed[catName] || 0) - (prevClosed[catName] || 0)
       })).sort((a, b) => b.diff - a.diff);
-
       const topIncrease = categoryDiffs[0];
       const topDecrease = categoryDiffs[categoryDiffs.length - 1];
       const insights = [];
-
-      if (topIncrease.diff > 0) {
-        insights.push(`subió sobre todo ${topIncrease.icon} ${topIncrease.cat} (+${formatCurrency(topIncrease.diff)})`);
-      }
-      if (topDecrease.diff < 0) {
-        insights.push(`bajó sobre todo ${topDecrease.icon} ${topDecrease.cat} (${formatCurrency(topDecrease.diff)})`);
-      }
-
-      if (insights.length > 0) {
-        movementContainer.textContent = `💡 En ${getMonthName(months[totalCount - 2])} frente a ${getMonthName(
-          months[totalCount - 3]
-        )}: ${insights.join(" y ")}.`;
-      }
+      if (topIncrease?.diff > 0) insights.push(`subió sobre todo ${topIncrease.icon} ${topIncrease.cat} (+${formatCurrency(topIncrease.diff)})`);
+      if (topDecrease?.diff < 0) insights.push(`bajó sobre todo ${topDecrease.icon} ${topDecrease.cat} (${formatCurrency(topDecrease.diff)})`);
+      if (insights.length) movementContainer.textContent = `💡 En ${getMonthName(latest)} frente a ${getMonthName(previous)}: ${insights.join(" y ")}.`;
     }
+
   }
 
   window.Spendly = window.Spendly || {};
@@ -432,3 +406,4 @@
     getMonthName: getMonthName
   };
 })(window);
+
