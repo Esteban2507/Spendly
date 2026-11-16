@@ -147,6 +147,22 @@ test('rapid repeated clicks save one receipt', async () => {
   assert.equal(env.api.State.expenses.length, 1);
 });
 
+test('discarding a receipt waiting for the storage lock cancels its queued save', async () => {
+  const env = setup();
+  await imageReview(env);
+  let release;
+  env.context.navigator.locks = { request: (_name, operation) => new Promise((resolve) => { release = () => resolve(operation()); }) };
+  const saving = env.elements.get('btn-confirm-receipt').onclick();
+  assert.equal(typeof release, 'function');
+  env.elements.get('btn-cancel-receipt').onclick();
+  release();
+  await saving;
+  assert.equal(env.api.State.expenses.length, 0);
+  assert.equal(env.elements.get('receipt-modal').hidden, true);
+  assert.equal(env.toasts.length, 0);
+  assert.equal(env.elements.get('receipt-error').hidden, true);
+});
+
 test('closing during OCR ignores stale results and returns focus', async () => {
   const env = setup();
   let resolveRecognition;

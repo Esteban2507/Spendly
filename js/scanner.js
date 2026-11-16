@@ -425,6 +425,8 @@
     newExpense.receiptFingerprint = receiptFingerprint(newExpense);
     if (currentSourceHash) newExpense.sourceHash = currentSourceHash;
     const expenseCurrency = State.currency;
+    const saveJob = jobSequence;
+    let saveCancelled = false;
     let duplicateDeclined = false;
     savingReceipt = true;
     const saveButton = $("btn-confirm-receipt");
@@ -432,6 +434,7 @@
     let ok = false;
     try {
       ok = await persistChangeAsync(() => {
+        if (saveJob !== jobSequence) { saveCancelled = true; return false; }
         if (State.currency !== expenseCurrency) throw new Error("La moneda cambió en otra pestaña. Revisa la moneda y vuelve a intentar.");
         const exactDuplicate = newExpense.sourceHash && State.expenses.some((expense) => expense.sourceHash === newExpense.sourceHash);
         const possibleDuplicate = State.expenses.some((expense) => receiptFingerprint(expense) === newExpense.receiptFingerprint);
@@ -459,7 +462,7 @@
       if (saveButton) saveButton.disabled = false;
     }
     if (!ok) {
-      if (duplicateDeclined) return;
+      if (duplicateDeclined || saveCancelled) return;
       const status = window.Spendly.getStorageStatus();
       modalMessage("receipt-error", status.error || "No se pudo guardar. Conserva el comprobante y vuelve a intentar.", "alert");
       return;

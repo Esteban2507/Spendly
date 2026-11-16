@@ -748,6 +748,19 @@
     if (result.ambiguous && result.ambiguous.length) showToast("Hay recurrentes con varias coincidencias manuales. Revisá los pendientes antes de registrarlos.", "info", "⚠️");
   }
 
+  async function applyRecurringDue() {
+    let result = { added: 0 };
+    const saved = await persistChangeAsync(() => {
+      result = Recurring.apply();
+      // Examinar todo el historial de reglas; un vencimiento futuro de este mes
+      // no debe ocultar cargos pendientes de meses anteriores.
+      return result.changed;
+    }, { refresh: true });
+    updateStorageStatus();
+    if (!saved && !getStorageStatus().ok) showToast(getStorageStatus().error, "error", "⚠️");
+    return saved ? result : { ...result, added: 0 };
+  }
+
   async function initOfflineReader() {
     const button = $("prepare-offline");
     const status = $("offline-status");
@@ -951,10 +964,7 @@
     };
 
     let recurringResult = { added: 0 };
-    if (!loadInfo.error) {
-      const due = Recurring.getPending(ymOf(new Date())).some((item) => item.date <= today());
-      if (due) await persistAndNotify(() => { recurringResult = Recurring.apply(); });
-    }
+    if (!loadInfo.error) recurringResult = await applyRecurringDue();
 
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
@@ -971,10 +981,7 @@
     document.addEventListener("visibilitychange", async () => {
       if (document.visibilityState !== "visible") return;
       const synced = syncState();
-      if (!synced.error && !synced.conflict && Recurring.getPending(ymOf(new Date())).some((item) => item.date <= today())) {
-        let result;
-        if (await persistAndNotify(() => { result = Recurring.apply(); })) notifyRecurringAmbiguity(result);
-      }
+      if (!synced.error && !synced.conflict) notifyRecurringAmbiguity(await applyRecurringDue());
       render();
     });
 
@@ -993,7 +1000,7 @@
     if (recurringResult.added > 0) {
       const n = recurringResult.added;
       showToast(
-        n === 1 ? "Se añadió 1 gasto recurrente de este mes" : `Se añadieron ${n} gastos recurrentes de este mes`,
+        n === 1 ? "Se añadió 1 gasto recurrente pendiente" : `Se añadieron ${n} gastos recurrentes pendientes`,
         "info",
         "🔄"
       );

@@ -144,6 +144,22 @@ test('legacy backups migrate and malformed sub-cent expenses are rejected', asyn
   expect(await count(page)).toBe(2);
 });
 
+test('startup catches up missed months before the current month due date', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('gastos-v1')) localStorage.setItem('gastos-v1', JSON.stringify({
+      version: 3, currency: 'ARS', budgets: {}, expenses: [], dismissed: [], recurring: [
+        { id: 'internet', desc: 'Internet', amount: 10000, cat: 'Vivienda', day: 30, from: '2026-10', done: [] }
+      ]
+    }));
+  });
+  await open(page);
+  await expect.poll(() => count(page)).toBe(1);
+  expect(await page.evaluate(() => window.Spendly.State.expenses[0].date)).toBe('2026-10-30');
+  expect(await page.evaluate(() => window.Spendly.Recurring.getPending('2026-11')[0].date)).toBe('2026-11-30');
+  await page.reload();
+  expect(await count(page)).toBe(1);
+});
+
 function pdfFixture() {
   const lines = ['SUPERMERCADO COTO', 'Fecha: 16/11/2026', 'SUBTOTAL 8.264,46', 'IVA 1.735,54', 'TOTAL $ 10.000', 'Pagado 20.000,00', 'Vuelto 10.000,00', 'CAE 1234567'];
   const stream = 'BT /F1 16 Tf 30 450 Td ' + lines.map((line, i) => (i ? '0 -35 Td ' : '') + `(${line}) Tj`).join('\n') + ' ET';
