@@ -87,6 +87,42 @@ test('failed storage keeps form values, rolls back and never shows success', asy
   await expect(page.locator('#toast-container')).not.toContainText('guardado.');
 });
 
+test('editing a stale form cannot overwrite another tab updated expense', async ({ page, context }) => {
+  await open(page);
+  await fillExpense(page, 'Cambio concurrente', '100');
+  await page.locator('#add').click();
+  await expect.poll(() => count(page)).toBe(1);
+  const second = await context.newPage();
+  await open(second);
+  await movements(second);
+  await page.locator('.edit-btn').first().click();
+  await page.locator('#amt').fill('111');
+  await second.locator('.edit-btn').first().click();
+  await second.locator('#amt').fill('222');
+  await second.locator('#add').click();
+  await expect.poll(() => page.evaluate(() => window.Spendly.State.expenses[0].amount)).toBe(222);
+  await page.locator('#add').click();
+  await expect(page.locator('#toast-container')).toContainText('El gasto cambió en otra pestaña');
+  await expect(page.locator('#amt')).toHaveValue('111');
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('gastos-v1')).expenses[0].amount)).toBe(222);
+});
+
+test('a queued budget save keeps its original month while navigating', async ({ page }) => {
+  await open(page);
+  await settings(page);
+  await page.locator('#budget').fill('1234');
+  await page.evaluate(() => {
+    navigator.locks.request('spendly-state-write', () => new Promise((resolve) => { window.releaseBudgetLock = resolve; }));
+  });
+  await page.waitForFunction(() => typeof window.releaseBudgetLock === 'function');
+  await page.locator('#save-budget').click();
+  await page.locator('#next').click();
+  await page.evaluate(() => window.releaseBudgetLock());
+  await expect.poll(() => page.evaluate(() => window.Spendly.getBudget('2026-11').total)).toBe(1234);
+  expect(await page.evaluate(() => window.Spendly.getBudget('2026-12').total)).toBe(0);
+  await expect(page.locator('#budget')).toHaveValue('');
+});
+
 test('legacy backups migrate and malformed sub-cent expenses are rejected', async ({ page }) => {
   await page.addInitScript(() => {
     if (!localStorage.getItem('gastos-v1')) localStorage.setItem('gastos-v1', JSON.stringify({
