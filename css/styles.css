@@ -1259,3 +1259,230 @@ button.btn-icon {
 .btn-secondary:hover {
   background: var(--bd);
 }
+
+
+/* ==========================================================================
+   SECCIÓN 17 - AUTENTICACIÓN Y SINCRONIZACIÓN EN LA NUBE
+   ========================================================================== */
+
+/* ── Área de auth en el header ───────────────────────────────────────────── */
+.auth-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.auth-logged-out,
+.auth-logged-in {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Botón "Iniciar sesión con Google" en el header */
+.btn-auth-login {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  color: #3c4043;
+  border: 1.5px solid #dadce0;
+  border-radius: 24px;
+  padding: 5px 12px 5px 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, box-shadow 0.18s;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+.btn-auth-login:hover {
+  background: #f8f9fa;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+}
+[data-theme="dark"] .btn-auth-login {
+  background: #2d2d2d;
+  color: #e8eaed;
+  border-color: #5f6368;
+}
+[data-theme="dark"] .btn-auth-login:hover {
+  background: #3a3a3a;
+}
+
+/* Avatar del usuario logueado */
+.auth-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.auth-username {
+  font-size: 0.78rem;
+  font-weight: 600;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tx);
+}
+
+/* Botón cerrar sesión (header) - pequeño icono */
+.btn-auth-logout {
+  background: transparent;
+  border: 1.5px solid var(--bd);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--sub);
+  transition: background 0.18s, color 0.18s;
+  flex-shrink: 0;
+}
+.btn-auth-logout:hover {
+  background: var(--bd);
+  color: var(--tx);
+}
+
+/* ── Indicador de sincronización ─────────────────────────────────────────── */
+.sync-indicator {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 20px;
+  animation: fadeInScale 0.2s ease;
+  white-space: nowrap;
+}
+.sync-indicator.syncing {
+  background: rgba(255, 193, 7, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(255, 193, 7, 0.3);
+}
+.sync-indicator.synced {
+  background: rgba(0, 229, 188, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(0, 229, 188, 0.3);
+}
+.sync-indicator.sync-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+/* ── Tarjeta de cuenta en Ajustes ────────────────────────────────────────── */
+.cloud-account-card {
+  position: relative;
+}
+
+.settings-auth-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Promo box cuando no está logueado */
+.cloud-promo-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: linear-gradient(135deg, rgba(0,229,188,0.08), rgba(37,99,235,0.08));
+  border: 1.5px solid rgba(0,229,188,0.25);
+  border-radius: 14px;
+  padding: 14px;
+}
+.cloud-promo-icon {
+  font-size: 2rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* Botón "Iniciar sesión" grande en la pestaña Ajustes */
+.btn-auth-login-settings {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #fff;
+  color: #3c4043;
+  border: 1.5px solid #dadce0;
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, box-shadow 0.18s;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.14);
+  align-self: flex-start;
+}
+.btn-auth-login-settings:hover {
+  background: #f8f9fa;
+  box-shadow: 0 3px 8px rgba(0,0,0,0.2);
+}
+[data-theme="dark"] .btn-auth-login-settings {
+  background: #2d2d2d;
+  color: #e8eaed;
+  border-color: #5f6368;
+}
+[data-theme="dark"] .btn-auth-login-settings:hover {
+  background: #3a3a3a;
+}
+
+/* Perfil del usuario logueado en Ajustes */
+.auth-profile-box {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(135deg, rgba(0,229,188,0.08), rgba(37,99,235,0.08));
+  border: 1.5px solid rgba(0,229,188,0.25);
+  border-radius: 14px;
+  padding: 14px;
+}
+.auth-avatar-lg {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2.5px solid var(--accent);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+/* Botón cerrar sesión en Ajustes */
+.btn-auth-logout-settings {
+  background: transparent;
+  border: 1.5px solid var(--bd);
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--sub);
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+  align-self: flex-start;
+}
+.btn-auth-logout-settings:hover {
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  border-color: #ef4444;
+}
+
+/* ── Responsive: compactar auth en móvil ─────────────────────────────────── */
+@media (max-width: 480px) {
+  .auth-username {
+    display: none;
+  }
+  .btn-auth-login span {
+    display: none;
+  }
+  .btn-auth-login {
+    padding: 5px 8px;
+    border-radius: 50%;
+  }
+}

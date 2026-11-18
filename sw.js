@@ -1,6 +1,6 @@
 // Service Worker - Spendly (PWA Offline Cache)
 // Estrategia: Network-first con fallback a caché y actualización en segundo plano
-const CACHE_NAME = "spendly-v6";
+const CACHE_NAME = "spendly-v7";
 
 const APP_SHELL = [
   "./",
@@ -11,6 +11,8 @@ const APP_SHELL = [
   "./js/recurring.js",
   "./js/chart.js",
   "./js/scanner.js",
+  "./js/auth.js",
+  "./js/cloud.js",
   "./js/app.js",
   "./assets/brand/spendly-header-logo.png",
   "./assets/icons/app-icon-512.png",
@@ -43,7 +45,11 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  if (request.method !== "GET" || new URL(request.url).origin !== location.origin) return;
+  // No cachear peticiones de Firebase (autenticación, Firestore)
+  if (
+    request.method !== "GET" ||
+    new URL(request.url).origin !== location.origin
+  ) return;
 
   event.respondWith(
     fetch(request)
