@@ -194,3 +194,21 @@ test('an unresponsive sign-out reports failure and keeps session identity visibl
   await assert.rejects(env.Auth.signOut(), /cerrar la sesión a tiempo/);
   assert.equal(env.Auth.currentUser().uid, 'user-a');
 });
+
+test('late session callbacks after startup timeout cannot reactivate an unavailable session', async () => {
+  const env = setup({ config, noInitialEvent: true, fastTimeout: true });
+  const result = await env.Auth.init();
+  assert.equal(result.code, 'auth/session-timeout');
+  env.fireUser({ uid: 'late-user' });
+  assert.equal(env.Auth.currentUser(), null);
+  assert.equal(env.Auth.status().available, false);
+});
+
+test('incompatible already-loaded SDK versions are never mixed with the pinned release', async () => {
+  const env = setup({ config });
+  env.firebase.SDK_VERSION = '10.14.1';
+  const result = await env.Auth.init();
+  assert.equal(result.code, 'auth/sdk-version-mismatch');
+  assert.equal(env.initCount(), 0);
+  assert.equal(env.scripts.length, 0);
+});

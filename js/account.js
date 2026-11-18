@@ -31,15 +31,16 @@
       if (!stillActive()) return false;
       const base = api.getCloudBaseline();
       const dirty = api.isCloudDirty();
+      const alreadySaved = dirty && remote.state && api.sameSnapshot(api.State, remote.state);
 
       const newCloudProfile = base === undefined && remote.revision === null;
       if ((useCloud && original !== JSON.stringify(api.State)) ||
-          (!useCloud && !newCloudProfile && base !== remote.revision && (dirty || (base && !remote.state)))) {
+          (!useCloud && !newCloudProfile && !alreadySaved && base !== remote.revision && (dirty || (base && !remote.state)))) {
         Cloud.reportStatus("conflict", "Los datos de este dispositivo y los de la nube son distintos. Descargá un respaldo antes de elegir qué versión usar.");
         return false;
       }
 
-      if (useCloud || (base !== remote.revision && !dirty)) {
+      if (useCloud || alreadySaved || (base !== remote.revision && !dirty)) {
         if (!api.replaceFromCloud(remote.state, remote.revision, uid)) {
           Cloud.reportStatus("error", "No se pudo guardar la versión de la nube en este dispositivo.");
           return false;

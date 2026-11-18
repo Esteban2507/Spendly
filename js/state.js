@@ -29,30 +29,43 @@
   // Idioma para formatear importes: el del teléfono si es español (es-AR, es-MX...), si no es-ES
   const LOCALE = /^es(-|$)/i.test(navigator.language || "") ? navigator.language : "es-ES";
 
-  /**
-   * Convierte lo que escribe la persona en un número, entendiendo ambos estilos:
-   * "1.234,50", "1,234.50", "24,5", "24.50", "$ 1.234".
-   * Regla: el ÚLTIMO separador es el decimal, salvo que haya varios iguales o que
-   * queden exactamente 3 dígitos detrás ("1.234" = 1234, "0.500" = 0,5).
-   * Devuelve NaN si no hay número.
-   */
+  /** Lee un importe completo; nunca concatena números ni elimina signos negativos. */
   function parseAmount(raw) {
-    let s = String(raw == null ? "" : raw).replace(/[^\d.,]/g, "");
-    if (!/\d/.test(s)) return NaN;
-    const count = (ch) => s.split(ch).length - 1;
-    const lastSep = Math.max(s.lastIndexOf(","), s.lastIndexOf("."));
-    if (lastSep >= 0) {
-      const sep = s[lastSep];
-      const other = sep === "," ? "." : ",";
-      const intPart = s.slice(0, lastSep).replace(/[.,]/g, "");
-      const digitsAfter = s.length - lastSep - 1;
-      const isThousands =
-        count(sep) > 1 ||
-        (digitsAfter === 3 && !s.includes(other) && intPart !== "" && intPart !== "0");
-      s = isThousands ? s.replace(/[.,]/g, "") : (intPart || "0") + "." + s.slice(lastSep + 1);
+    if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 && raw <= Number.MAX_SAFE_INTEGER / 100 ? raw : NaN;
+    let s = String(raw == null ? "" : raw).trim();
+    const currency = "(?:ARS|USD|EUR|MXN|COP|CLP|GBP|UYU|PEN|US\\$|U\\$D|AR\\$|[$€£])";
+    s = s.replace(new RegExp("^" + currency + "\\s*", "i"), "").replace(new RegExp("\\s*" + currency + "$", "i"), "").trim();
+    if (/\s/.test(s)) {
+      if (!/^\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?$/.test(s)) return NaN;
+      s = s.replace(/[ \u00a0\u202f]/g, "");
     }
-    const n = parseFloat(s);
-    return isFinite(n) ? n : NaN;
+    if (!/^\d+(?:[.,]\d+)*$/.test(s)) return NaN;
+    const hasDot = s.includes(".");
+    const hasComma = s.includes(",");
+    if (hasDot && hasComma) {
+      const decimal = s.lastIndexOf(",") > s.lastIndexOf(".") ? "," : ".";
+      const grouping = decimal === "," ? "." : ",";
+      const parts = s.split(decimal);
+      if (parts.length !== 2 || !/^\d{1,2}$/.test(parts[1])) return NaN;
+      const grouped = new RegExp("^\\d{1,3}(?:\\" + grouping + "\\d{3})+$");
+      if (!grouped.test(parts[0])) return NaN;
+      s = parts[0].split(grouping).join("") + "." + parts[1];
+    } else if (hasDot || hasComma) {
+      const sep = hasDot ? "." : ",";
+      const parts = s.split(sep);
+      if (parts.length > 2) {
+        if (!/^\d{1,3}$/.test(parts[0]) || parts.slice(1).some((p) => !/^\d{3}$/.test(p))) return NaN;
+        s = parts.join("");
+      } else if (parts[1].length === 3 && parts[0] !== "0") {
+        if (!/^\d{1,3}$/.test(parts[0])) return NaN;
+        s = parts.join("");
+      } else {
+        if (parts[1].length > 2 && !(parts[0] === "0" && parts[1].length === 3)) return NaN;
+        s = parts[0] + "." + parts[1];
+      }
+    }
+    const n = Number(s);
+    return Number.isFinite(n) && n >= 0 && n <= Number.MAX_SAFE_INTEGER / 100 ? n : NaN;
   }
 
   // ---- Validación y limpieza de datos (localStorage o respaldos importados) ----
@@ -239,6 +252,9 @@
     if (clean.dropped > 0) throw new Error("Hay registros dañados. Descarga una copia antes de restaurar los datos.");
     return clean;
   }
+  function sameSnapshot(first, second) {
+    return JSON.stringify(validateState(first)) === JSON.stringify(validateState(second));
+  }
   function envelope(state, revision, dirty) {
     return activeProfile === null ? state : {
       format: "spendly-profile-v1", owner: activeProfile, state,
@@ -326,7 +342,7 @@
 
   function acceptCloudWrite(uid, revision, sentState, priorRevision) {
     if (uid !== activeProfile || cloudBaseline !== priorRevision) return false;
-    const dirty = stateSnapshot() !== JSON.stringify(sentState);
+    const dirty = !sameSnapshot(State, sentState);
     if (!writeLocal(clone(State), revision, dirty)) return false;
     cloudBaseline = revision;
     cloudDirty = dirty;
@@ -501,4 +517,5 @@
   window.Spendly.replaceFromCloud = replaceFromCloud;
   window.Spendly.getStorageStatus = getStorageStatus;
   window.Spendly.replaceLocalState = replaceLocalState;
+  window.Spendly.sameSnapshot = sameSnapshot;
 })(window);

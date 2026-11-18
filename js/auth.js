@@ -157,12 +157,13 @@
       if (attempt !== epoch) return status();
       if (unsubscribeAuth) unsubscribeAuth();
       const initial = new Promise((resolve, reject) => {
+        let firstEvent = true;
         unsubscribeAuth = auth.onAuthStateChanged((nextUser) => {
           if (attempt !== epoch) return;
-          const first = !initialized;
           initialized = true;
           publishStatus({ available: true, ready: true, loading: false, code: "ready", reason: "Inicio de sesión disponible." });
-          publishUser(nextUser, first);
+          publishUser(nextUser, firstEvent);
+          firstEvent = false;
           resolve();
         }, (error) => {
           if (attempt !== epoch) return;

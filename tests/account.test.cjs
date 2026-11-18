@@ -20,6 +20,7 @@ function setup() {
     },
     getProfile: () => active,
     getCloudBaseline: () => profile().base,
+    sameSnapshot: (a, b) => JSON.stringify(a) === JSON.stringify(b),
     isCloudDirty: () => Boolean(profile().dirty),
     replaceFromCloud(state, revision, uid) {
       assert.equal(uid, active);
@@ -92,4 +93,14 @@ test('a delayed cloud response is ignored after login to a different account', a
   assert.equal(await late, false);
   assert.deepEqual(api.State.expenses, ['B']);
   assert.deepEqual(changes, [{ action: 'replace', uid: 'b', revision: 'b-revision' }]);
+});
+
+test('a write completed before logout can be acknowledged on the next sign-in', async () => {
+  const { account, server, accounts, changes } = setup();
+  accounts.set('a', { base: 'old', state: { expenses: ['saved'] }, dirty: true });
+  server.set('a', { revision: 'new', state: { expenses: ['saved'] } });
+  account.open('a');
+  assert.equal(await account.reconcile(), true);
+  assert.equal(accounts.get('a').dirty, false);
+  assert.deepEqual(changes, [{ action: 'replace', uid: 'a', revision: 'new' }]);
 });

@@ -54,6 +54,27 @@ test('new cloud write uses a transaction and acknowledges exactly its sent snaps
   assert.equal(f.docs.get('alice').state.expenses[0].id,'a');assert.equal(s.isCloudDirty(),false);assert.equal(s.getCloudBaseline(),f.docs.get('alice').revision);
 });
 
+test('cloud acknowledgement compares expense values without relying on field order', async () => {
+  const f = fixture();
+  const s = f.s;
+  f.account('alice');
+  s.saveCloudBaseline(null, 'alice');
+  s.Cloud.resume();
+  const item = expense('receipt');
+  s.State.expenses.push({ date: item.date, id: item.id, amount: item.amount, cat: item.cat, desc: item.desc });
+  assert.equal(s.saveState(), true);
+  assert.equal(await s.Cloud.saveNow('alice', s.State), true);
+  assert.equal(s.isCloudDirty(), false);
+});
+
+test('manual amount parsing rejects negatives and mixed labels instead of turning them into expenses', () => {
+  const { s } = fixture();
+  assert.equal(s.parseAmount('ARS 1.250,50'), 1250.5);
+  for (const text of ['-20', '20 artículos', '12 34', '2,30,40']) {
+    assert.equal(Number.isNaN(s.parseAmount(text)), true, text);
+  }
+});
+
 test('remote revision conflicts never overwrite or resurrect deleted data',async()=>{
   const f=fixture();const s=f.s;f.account('alice');s.saveCloudBaseline('old','alice');s.Cloud.resume();s.State.expenses.push(expense('old-deleted'));s.saveState();f.docs.set('alice',{state:empty(),revision:'new'});
   assert.equal(await s.Cloud.saveNow('alice',s.State,'old'),false);assert.equal(f.writes.length,0);assert.equal(f.docs.get('alice').state.expenses.length,0);assert.equal(s.isCloudDirty(),true);assert.equal(s.Cloud.getStatus().phase,'conflict');

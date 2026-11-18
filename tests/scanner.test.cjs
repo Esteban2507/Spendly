@@ -261,3 +261,37 @@ test('changing currency during receipt review requires a new review', async () =
   assert.equal(env.api.State.expenses.length, 0);
   assert.match(env.elements.get('receipt-error').textContent, /moneda/);
 });
+
+test('async OCR results are rejected when the active profile changed even before a UI reset', async () => {
+  const env = setup();
+  let release;
+  let started;
+  const recognizing = new Promise((resolve) => { started = resolve; });
+  env.context.Tesseract = { createWorker: async () => ({
+    recognize: () => { started(); return new Promise((resolve) => { release = resolve; }); },
+    terminate: async () => {}
+  }) };
+  const pending = env.api.Scanner.handleFile({ name: 'private.png', type: 'image/png', size: 3,
+    arrayBuffer: async () => new Uint8Array([10,11,12]).buffer });
+  await recognizing;
+  env.api.switchProfile('other-account');
+  release({ data: { text: 'PRIVATE MERCHANT\n16/11/2026\nTOTAL 500' } });
+  await pending;
+  assert.equal(env.elements.get('receipt-review-form').hidden, true);
+  assert.notEqual(env.elements.get('receipt-desc').value, 'PRIVATE MERCHANT');
+  assert.equal(env.elements.get('receipt-raw-text').textContent || '', '');
+  env.api.Scanner.reset();
+});
+
+test('duplicate receipt protection survives loading the stored profile again', async () => {
+  const env = setup();
+  await imageReview(env);
+  env.elements.get('btn-confirm-receipt').onclick();
+  const hash = env.api.State.expenses[0].sourceHash;
+  env.api.loadState();
+  assert.equal(env.api.State.expenses[0].sourceHash, hash);
+  await imageReview(env);
+  env.elements.get('btn-confirm-receipt').onclick();
+  assert.equal(env.confirms(), 1);
+  assert.equal(env.api.State.expenses.length, 1);
+});
