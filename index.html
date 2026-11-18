@@ -20,7 +20,7 @@
 </head>
 <body>
   <!-- Contenedor de Notificaciones Toast Flotantes -->
-  <div id="toast-container" class="toast-container"></div>
+  <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
 
   <main>
     <!-- Encabezado con Identidad y Selector de Mes -->
@@ -39,7 +39,7 @@
         <div class="auth-area">
           <!-- Usuario NO logueado -->
           <div id="auth-logged-out" class="auth-logged-out">
-            <button id="btn-auth-login" class="btn-auth-login" title="Iniciar sesión para sincronizar en la nube">
+            <button id="btn-auth-login" class="btn-auth-login" title="Iniciar sesión para sincronizar en la nube" disabled>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
                 <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -52,9 +52,9 @@
           <!-- Usuario logueado -->
           <div id="auth-logged-in" class="auth-logged-in" hidden>
             <span id="sync-indicator" class="sync-indicator" style="display:none"></span>
-            <img id="auth-user-avatar" class="auth-avatar" src="" alt="Avatar" width="28" height="28">
+            <img id="auth-user-avatar" class="auth-avatar" alt="" width="28" height="28">
             <span id="auth-user-name" class="auth-username"></span>
-            <button id="btn-auth-logout" class="btn-auth-logout" title="Cerrar sesión">↩</button>
+            <button id="btn-auth-logout" class="btn-auth-logout" title="Cerrar sesión" aria-label="Cerrar sesión">↩</button>
           </div>
         </div>
       </div>
@@ -259,6 +259,7 @@
           <button id="rs">📥 Restaurar Respaldo</button>
           <input id="rsfile" type="file" accept="application/json,.json" hidden>
         </div>
+        <p id="local-status" class="sub" role="status">Los datos de este perfil se guardan en este dispositivo.</p>
       </div>
 
       <!-- Cuenta y Sincronización en la Nube -->
@@ -272,11 +273,11 @@
             <div>
               <strong>Guarda tus datos en la nube</strong>
               <div class="sub" style="margin-top:4px">
-                Inicia sesión con Google para sincronizar tus gastos entre dispositivos y no perder nada si cambias de navegador.
+                Inicia sesión con Google para abrir los gastos de tu cuenta en otros dispositivos. Tus gastos de invitado quedan en este navegador.
               </div>
             </div>
           </div>
-          <button class="btn-auth-login btn-auth-login-settings" id="btn-auth-login-settings">
+          <button class="btn-auth-login btn-auth-login-settings" id="btn-auth-login-settings" disabled>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
               <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -293,16 +294,20 @@
         <!-- Estado: logueado -->
         <div id="settings-logged-in" class="settings-auth-section" hidden>
           <div class="auth-profile-box">
-            <img id="settings-user-avatar" class="auth-avatar-lg" src="" alt="Avatar" width="48" height="48">
+            <img id="settings-user-avatar" class="auth-avatar-lg" alt="" width="48" height="48">
             <div>
               <strong id="settings-user-name"></strong>
               <div class="sub" id="settings-user-email" style="margin-top:2px"></div>
-              <div class="sub" style="color: var(--accent); margin-top:4px; font-size:0.78rem">✓ Sincronización activa</div>
             </div>
           </div>
           <button id="btn-auth-logout-settings" class="btn-auth-logout-settings">
             Cerrar sesión
           </button>
+        </div>
+        <p id="cloud-status" class="sub" role="status" aria-live="polite">Verificando la disponibilidad de la sincronización…</p>
+        <div class="row">
+          <button id="retry-cloud" type="button" hidden>Reintentar sincronización</button>
+          <button id="use-cloud" type="button" hidden>Usar datos de la nube</button>
         </div>
       </div>
     </section>
@@ -310,11 +315,11 @@
 
   <!-- Modal de Revisión y Corrección de Comprobante -->
   <div id="receipt-modal" class="modal-overlay" hidden>
-    <div class="modal-container">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="receipt-modal-title" tabindex="-1">
       <div class="modal-header">
         <div class="modal-title">
           <span class="modal-title-icon">🧾</span>
-          <h3>Revisar Comprobante Leído</h3>
+          <h3 id="receipt-modal-title">Revisar Comprobante Leído</h3>
         </div>
         <button type="button" class="btn-close-modal" id="btn-close-receipt-modal" aria-label="Cerrar modal">✕</button>
       </div>
@@ -373,14 +378,6 @@
     </div>
   </div>
 
-  <!-- Librería PDF.js para lectura de comprobantes PDF -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-
-  <!-- Firebase SDK (Auth + Firestore) - Carga condicional: si no hay config, no falla -->
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-
   <!-- Módulos JavaScript -->
   <script src="./js/state.js"></script>
   <script src="./js/recurring.js"></script>
@@ -388,6 +385,7 @@
   <script src="./js/scanner.js"></script>
   <script src="./js/auth.js"></script>
   <script src="./js/cloud.js"></script>
+  <script src="./js/account.js"></script>
   <script src="./js/app.js"></script>
 </body>
 </html>

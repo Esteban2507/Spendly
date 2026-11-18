@@ -1,122 +1,166 @@
 /**
- * ============================================================================
- * Spendly - Módulo Lector Inteligente de Comprobantes (PDF e Imágenes)
- * Extracción de texto mediante PDF.js y OCR (Tesseract.js) con parser heurístico
- * ============================================================================
+ * Spendly — lectura local de comprobantes. Los archivos nunca se envían a un servidor.
+ * Las dependencias se descargan bajo demanda y pueden prepararse para uso sin conexión.
  */
-
 (function (window) {
   "use strict";
-
-  const {
-    CATS,
-    COL,
-    CAT_ICONS,
-    State,
-    uid,
-    today,
-    formatCurrency,
-    saveState
-  } = window.Spendly;
-
+  const { CATS, COL, State, uid, formatCurrency, parseAmount, isValidDate,
+    normalizeText, saveState, getProfile } = window.Spendly;
   const $ = (id) => document.getElementById(id);
-
-  // URLs de librerías para carga bajo demanda (CDN)
-  const TESSERACT_CDN = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-  const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-
-  // Estado del modal de escaneo
+  const ASSETS = Object.freeze([
+    "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.min.mjs",
+    "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/legacy/build/pdf.worker.min.mjs",
+    "https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js",
+    "https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js",
+    "https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/tesseract-core-lstm.wasm.js",
+    "https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/tesseract-core-lstm.wasm",
+    "https://tessdata.projectnaptha.com/4.0.0/spa.traineddata.gz"
+  ]);
+  const MAX_FILE_BYTES = 20 * 1024 * 1024;
+  const MAX_PDF_PAGES = 10;
+  const LOAD_TIMEOUT_MS = 45000;
   let currentParsedData = null;
   let currentFilePreview = null;
+  let currentSourceHash = "";
+  let reviewProfile = null;
+  let reviewCurrency = "";
+  let returnFocus = null;
+  let jobSequence = 0;
+  let activeCancel = null;
+  let savingReceipt = false;
+  let pdfModulePromise = null;
+  const scriptPromises = new Map();
 
-  // --------------------------------------------------------------------------
-  // 1. Carga Dinámica de Scripts
-  // --------------------------------------------------------------------------
+  function withTimeout(promise, label, onTimeout) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          if (onTimeout) onTimeout();
+          reject(new Error(`${label} tardó demasiado. Revisa la conexión e intenta de nuevo.`));
+        }, LOAD_TIMEOUT_MS);
+      })
+    ]).finally(() => clearTimeout(timer));
+  }
+
   function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const existing = document.querySelector(`script[src="${src}"]`);
-      if (existing) {
-        if (existing.dataset.loaded) return resolve();
-        existing.addEventListener("load", resolve);
-        existing.addEventListener("error", reject);
-        return;
-      }
-      const s = document.createElement("script");
-      s.src = src;
-      s.onload = () => {
-        s.dataset.loaded = "true";
-        resolve();
-      };
-      s.onerror = reject;
-      document.head.appendChild(s);
+    if (scriptPromises.has(src)) return scriptPromises.get(src);
+    const script = document.createElement("script");
+    const promise = withTimeout(new Promise((resolve, reject) => {
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("No se pudo descargar el motor OCR. Conéctate y vuelve a intentar."));
+      document.head.appendChild(script);
+    }), "La descarga del motor OCR", () => script.remove()).catch((error) => {
+      script.remove();
+      scriptPromises.delete(src);
+      throw error;
     });
+    scriptPromises.set(src, promise);
+    return promise;
   }
 
-  // --------------------------------------------------------------------------
-  // 2. Extracción de Texto de Archivos (PDF e Imágenes)
-  // --------------------------------------------------------------------------
-  async function extractTextFromPdf(arrayBuffer, updateStatus) {
-    if (!window.pdfjsLib) {
-      throw new Error("PDF.js no está disponible.");
+  function loadPdfModule() {
+    if (!pdfModulePromise) {
+      pdfModulePromise = withTimeout(import(ASSETS[0]), "La descarga del lector PDF").catch((error) => {
+        pdfModulePromise = null;
+        throw error;
+      });
     }
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
-
-    updateStatus("Leyendo páginas del PDF...");
-    const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
-    const pdf = await loadingTask.promise;
-
-    let fullText = "";
-    const numPages = Math.min(pdf.numPages, 3); // Analizar las primeras 3 páginas
-
-    for (let i = 1; i <= numPages; i++) {
-      updateStatus(`Extrayendo texto de página ${i} de ${pdf.numPages}...`);
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageStr = textContent.items.map((item) => item.str).join(" ");
-      fullText += pageStr + "\n";
-    }
-
-    // Si el PDF contiene poco texto (podría ser un PDF escaneado con solo imagen)
-    if (fullText.trim().length < 25 && pdf.numPages > 0) {
-      updateStatus("PDF escaneado detectado. Iniciando OCR óptico...");
-      const page1 = await pdf.getPage(1);
-      const viewport = page1.getViewport({ scale: 2.0 });
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-
-      await page1.render({ canvasContext: ctx, viewport }).promise;
-      return await extractTextFromImage(canvas, updateStatus);
-    }
-
-    return fullText;
+    return pdfModulePromise;
   }
 
-  async function extractTextFromImage(imageSource, updateStatus) {
-    updateStatus("Cargando motor de reconocimiento óptico (OCR)...");
-    if (!window.Tesseract) {
-      await loadScript(TESSERACT_CDN);
+  // Preserve document structure: a whole page must never become a single total line.
+  function textItemsToLines(items) {
+    const lines = [];
+    let parts = [];
+    let lastY = null;
+    for (const item of items) {
+      if (typeof item.str !== "string") continue;
+      const y = item.transform && Number(item.transform[5]);
+      const changedLine = Number.isFinite(y) && lastY !== null && Math.abs(y - lastY) > 3;
+      if (changedLine && parts.length) { lines.push(parts.join(" ")); parts = []; }
+      if (item.str.trim()) parts.push(item.str.trim());
+      if (Number.isFinite(y)) lastY = y;
+      if (item.hasEOL && parts.length) { lines.push(parts.join(" ")); parts = []; lastY = null; }
     }
+    if (parts.length) lines.push(parts.join(" "));
+    return lines.join("\n");
+  }
 
-    updateStatus("Procesando y leyendo comprobante...");
-    const worker = await window.Tesseract.createWorker("spa", 1, {
+  async function extractTextFromPdf(arrayBuffer, updateStatus, isCurrent) {
+    const pdfjs = await loadPdfModule();
+    if (!isCurrent()) return "";
+    pdfjs.GlobalWorkerOptions.workerSrc = ASSETS[1];
+    const loadingTask = pdfjs.getDocument({ data: arrayBuffer, isEvalSupported: false,
+      useWasm: false, useSystemFonts: true });
+    activeCancel = () => loadingTask.destroy();
+    let pdf;
+    try {
+      pdf = await withTimeout(loadingTask.promise, "La lectura del PDF", () => loadingTask.destroy());
+      if (pdf.numPages > MAX_PDF_PAGES) {
+        throw new Error(`El PDF tiene ${pdf.numPages} páginas. Usa un comprobante de hasta ${MAX_PDF_PAGES} páginas.`);
+      }
+      const texts = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        if (!isCurrent()) return "";
+        updateStatus(`Leyendo página ${i} de ${pdf.numPages}...`);
+        const page = await pdf.getPage(i);
+        const text = textItemsToLines((await page.getTextContent()).items);
+        if (text.replace(/\s/g, "").length >= 15) {
+          texts.push(text);
+        } else {
+          updateStatus(`Reconociendo imagen de página ${i} de ${pdf.numPages}...`);
+          const original = page.getViewport({ scale: 1 });
+          const scale = Math.min(2, 2500 / Math.max(original.width, original.height));
+          const viewport = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(viewport.width);
+          canvas.height = Math.ceil(viewport.height);
+          try {
+            await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+            if (isCurrent()) texts.push(await extractTextFromImage(canvas, updateStatus, isCurrent));
+          } finally { canvas.width = 0; canvas.height = 0; }
+          if (isCurrent()) activeCancel = () => loadingTask.destroy();
+        }
+        page.cleanup();
+      }
+      return texts.join("\n");
+    } finally {
+      await loadingTask.destroy();
+    }
+  }
+
+  async function extractTextFromImage(imageSource, updateStatus, isCurrent) {
+    updateStatus("Cargando motor OCR local...");
+    if (!window.Tesseract) await loadScript(ASSETS[2]);
+    if (!isCurrent()) return "";
+    const workerPromise = window.Tesseract.createWorker("spa", 1, {
+      workerPath: ASSETS[3], corePath: ASSETS[4],
+      langPath: "https://tessdata.projectnaptha.com/4.0.0", gzip: true,
       logger: (m) => {
-        if (m.status === "recognizing text" && m.progress) {
-          const pct = Math.round(m.progress * 100);
-          updateStatus(`Reconociendo texto: ${pct}%...`);
+        if (isCurrent() && m.status === "recognizing text") {
+          updateStatus(`Reconociendo texto: ${Math.round((m.progress || 0) * 100)}%...`);
         }
       }
     });
-
-    const ret = await worker.recognize(imageSource);
-    await worker.terminate();
-    return ret.data.text;
+    // A worker that finishes initializing after a cancellation is still terminated.
+    let initializationExpired = false;
+    workerPromise.then((worker) => {
+      if (initializationExpired || !isCurrent()) Promise.resolve(worker.terminate()).catch(() => {});
+    }, () => {});
+    const worker = await withTimeout(workerPromise, "La carga del OCR", () => { initializationExpired = true; });
+    try {
+      if (!isCurrent()) return "";
+      activeCancel = () => worker.terminate();
+      const result = await withTimeout(worker.recognize(imageSource), "El reconocimiento del comprobante", () => worker.terminate());
+      return result.data.text;
+    } finally {
+      await worker.terminate();
+    }
   }
 
-  // --------------------------------------------------------------------------
-  // 3. Algoritmo Heurístico de Análisis de Comprobantes (Parser)
-  // --------------------------------------------------------------------------
   const KNOWN_MERCHANTS = [
     { name: "Carrefour", pattern: /\bcarrefour\b/i, cat: "Comida" },
     { name: "Coto", pattern: /\bcoto\b/i, cat: "Comida" },
@@ -175,402 +219,332 @@
     "pagina", "orden", "transaccion", "autorizacion", "afip", "dgi", "ticket fiscal"
   ];
 
+  function parseScanAmount(raw) {
+    const value = String(raw == null ? "" : raw).trim()
+      .replace(/^(?:ARS|USD|EUR|COP|CLP|MXN|PEN|UYU|GBP|US\$|AR\$|S\/|[$€£])\s*/i, "");
+    // The shared parser is deliberately forgiving. Receipt confirmation must reject
+    // signs, mixed text, malformed grouping and values with fractions below a cent.
+    const plain = /^(?:\d+|\d*[.,]\d{1,2})$/;
+    const grouped = /^(?:[1-9]\d{0,2}(?:\.\d{3})+(?:,\d{1,2})?|[1-9]\d{0,2}(?:,\d{3})+(?:\.\d{1,2})?)$/;
+    return plain.test(value) || grouped.test(value) ? parseAmount(value) : NaN;
+  }
+
   function parseReceipt(rawText) {
-    if (!rawText) return getFallbackParsed();
-
-    const cleanLines = rawText
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
+    rawText = String(rawText || "");
+    const cleanLines = rawText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const fullNormalized = rawText.toLowerCase();
-
-    // 1. Detección de Comercio y Categoría
     let detectedMerchant = "";
     let detectedCategory = "Otros";
-
     for (const item of KNOWN_MERCHANTS) {
-      if (item.pattern.test(fullNormalized)) {
-        detectedMerchant = item.name;
-        detectedCategory = item.cat;
-        break;
-      }
+      if (item.pattern.test(fullNormalized)) { detectedMerchant = item.name; detectedCategory = item.cat; break; }
     }
-
-    // Si no se encontró un comercio conocido, buscar en las primeras 5 líneas limpias
     if (!detectedMerchant) {
-      for (let i = 0; i < Math.min(cleanLines.length, 6); i++) {
-        const line = cleanLines[i];
-        const lower = line.toLowerCase();
-        const hasNoise = NOISE_WORDS.some((word) => lower.includes(word));
-        const hasLetters = /[a-zA-ZáéíóúÁÉÍÓÚñÑ]{3,}/.test(line);
-
-        if (!hasNoise && hasLetters && line.length < 50) {
-          detectedMerchant = line
-            .replace(/[^\w\s\.\-áéíóúÁÉÍÓÚñÑ]/g, "")
-            .trim();
-          break;
-        }
-      }
+      detectedMerchant = cleanLines.slice(0, 6).find((line) =>
+        line.length < 50 && /[a-záéíóúñ]{3,}/i.test(line) &&
+        !NOISE_WORDS.some((word) => line.toLowerCase().includes(word))) || "Gasto con comprobante";
     }
-
-    if (!detectedMerchant) {
-      detectedMerchant = cleanLines[0] ? cleanLines[0].slice(0, 40) : "Gasto con comprobante";
-    }
-
-    // Auto-detección secundaria de categoría por palabras clave en todo el texto
     if (detectedCategory === "Otros") {
-      if (/\b(super|comida|almacen|panaderia|restaurante|cafe|cena|almuerzo|vianda|kiosco)\b/i.test(fullNormalized)) {
-        detectedCategory = "Comida";
-      } else if (/\b(combustible|nafta|gnc|peaje|estacionamiento|colectivo|pasaje|taxi|remis)\b/i.test(fullNormalized)) {
-        detectedCategory = "Transporte";
-      } else if (/\b(farmacia|medicamento|remedio|clinica|medico|optica|consulta)\b/i.test(fullNormalized)) {
-        detectedCategory = "Salud";
-      } else if (/\b(luz|gas|agua|expensas|alquiler|internet|servicio)\b/i.test(fullNormalized)) {
-        detectedCategory = "Vivienda";
-      } else if (/\b(cine|teatro|juego|recital|show|salida|bar)\b/i.test(fullNormalized)) {
-        detectedCategory = "Ocio";
-      } else if (/\b(ropa|calzado|tienda|indumentaria|shopping)\b/i.test(fullNormalized)) {
-        detectedCategory = "Compras";
-      }
+      const categories = [
+        ["Comida", /\b(super|comida|almacen|panaderia|restaurante|cafe|cena|almuerzo|vianda|kiosco)\b/i],
+        ["Transporte", /\b(combustible|nafta|gnc|peaje|estacionamiento|colectivo|pasaje|taxi|remis)\b/i],
+        ["Salud", /\b(farmacia|medicamento|remedio|clinica|medico|optica|consulta)\b/i],
+        ["Vivienda", /\b(luz|gas|agua|expensas|alquiler|internet|servicio)\b/i],
+        ["Ocio", /\b(cine|teatro|juego|recital|show|salida|bar)\b/i],
+        ["Compras", /\b(ropa|calzado|tienda|indumentaria|shopping)\b/i]
+      ];
+      const category = categories.find(([, pattern]) => pattern.test(fullNormalized));
+      if (category) detectedCategory = category[0];
     }
-
-    // 2. Detección de Importe (Total)
-    let detectedAmount = 0;
-    const amountCandidates = [];
-
-    // Buscar en líneas que contengan palabras indicativas de total
-    const totalRegex = /\b(total|importe|pagar|pagado|neto|monto|cobrado|total\s*\$|total\s*eur)\b/i;
-
-    cleanLines.forEach((line) => {
-      const isTotalLine = totalRegex.test(line) && !/\bsubtotal\b/i.test(line);
-      // Extrae números con formato monetario (ej. 1.250,50 / 1,250.50 / 1250,50 / 450.00 / 1250)
-      const matches = line.match(/(?:[\$€£]\s*)?([0-9]{1,3}(?:[.,][0-9]{3})*[.,][0-9]{2}|[0-9]+[.,][0-9]{2}|[0-9]{2,})/g);
-
-      if (matches) {
-        matches.forEach((m) => {
-          const cleanNumStr = m.replace(/[\$€£\s]/g, "");
-          const num = normalizeNumber(cleanNumStr);
-          if (num > 0 && num < 10000000) {
-            amountCandidates.push({
-              val: num,
-              isTotalLine: isTotalLine,
-              line: line
-            });
-          }
-        });
+    const warnings = [];
+    const candidates = [];
+    const totalLabels = /\b(importe\s+total|monto\s+total|total\s+(?:a\s+pagar|final|general|factura)|a\s+pagar|total)\b/gi;
+    // Only the amount immediately following a total label qualifies. Fiscal identifiers,
+    // tendered cash, change and years elsewhere in the text are never fallbacks.
+    const moneyStart = /^\s*[:=]?\s*(?:(?:ARS|USD|EUR|COP|CLP|MXN|PEN|UYU|GBP|US\$|AR\$|S\/|[$€£])\s*)?(\d+(?:[.,]\d+)*)(?![\d.,])/i;
+    cleanLines.forEach((line, index) => {
+      totalLabels.lastIndex = 0;
+      for (const match of line.matchAll(totalLabels)) {
+        const prefix = line.slice(0, match.index).trim();
+        if (/(?:sub|neto|iva|impuestos|descuento|percepcion|retencion)\s*$/i.test(prefix)) continue;
+        let tail = line.slice(match.index + match[0].length);
+        if (/^\s*(?:de\s+)?(?:iva|impuestos|percepciones|retenciones|descuentos|articulos|items)\b/i.test(tail)) continue;
+        if (!tail.replace(/[:=\s]/g, "") && cleanLines[index + 1]) tail = cleanLines[index + 1];
+        const amountMatch = tail.match(moneyStart);
+        if (!amountMatch) continue;
+        const trailing = tail.slice(amountMatch[0].length);
+        // A date or an identifier isn't a price even when it follows the word TOTAL.
+        if (/^\s*[\/-]\s*\d/.test(trailing) || /^\s*(?:%|(?:unidades|articulos|items)\b)/i.test(trailing)) continue;
+        if (/^\s+[\d.,]/.test(trailing)) continue;
+        const amount = parseScanAmount(amountMatch[1]);
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        const rank = /importe|monto|final|general|factura|total\s+a\s+pagar/i.test(match[0]) ? 2 : 1;
+        candidates.push({ amount: Math.round(amount * 100) / 100, rank });
       }
     });
+    const rank = candidates.reduce((max, item) => Math.max(max, item.rank), 0);
+    const totals = [...new Set(candidates.filter((item) => item.rank === rank).map((item) => item.amount))];
+    const amount = totals.length === 1 ? totals[0] : "";
+    if (!amount) warnings.push(totals.length > 1 ?
+      "Se encontraron distintos totales. Escribe el importe final del comprobante." :
+      "No se pudo identificar un total fiable. Completa el importe manualmente.");
 
-    // Priorizar montos en líneas de TOTAL
-    const totalMatches = amountCandidates.filter((c) => c.isTotalLine);
-    if (totalMatches.length > 0) {
-      // El total suele ser el número más grande entre las líneas etiquetadas como total
-      detectedAmount = Math.max(...totalMatches.map((c) => c.val));
-    } else if (amountCandidates.length > 0) {
-      // Tomar los montos de la mitad inferior del ticket (donde suele estar el total)
-      const lastHalf = amountCandidates.slice(Math.floor(amountCandidates.length / 2));
-      const pool = lastHalf.length > 0 ? lastHalf : amountCandidates;
-      detectedAmount = Math.max(...pool.map((c) => c.val));
+    let date = "";
+    const dateCandidates = [];
+    for (const match of rawText.matchAll(/\b(20\d{2})[\/\-.](0?[1-9]|1[0-2])[\/\-.](0?[1-9]|[12]\d|3[01])\b/g)) {
+      dateCandidates.push(`${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`);
     }
-
-    // 3. Detección de Fecha
-    let detectedDate = today();
-
-    // Patrón 1: DD/MM/YYYY o DD-MM-YYYY
-    const dmyMatch = rawText.match(/\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](20\d{2}|\d{2})\b/);
-    if (dmyMatch) {
-      let day = dmyMatch[1].padStart(2, "0");
-      let month = dmyMatch[2].padStart(2, "0");
-      let year = dmyMatch[3];
-      if (year.length === 2) year = "20" + year;
-      detectedDate = `${year}-${month}-${day}`;
-    } else {
-      // Patrón 2: YYYY-MM-DD
-      const ymdMatch = rawText.match(/\b(20\d{2})[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](0?[1-9]|[12][0-9]|3[01])\b/);
-      if (ymdMatch) {
-        let year = ymdMatch[1];
-        let month = ymdMatch[2].padStart(2, "0");
-        let day = ymdMatch[3].padStart(2, "0");
-        detectedDate = `${year}-${month}-${day}`;
-      }
+    for (const match of rawText.matchAll(/\b(0?[1-9]|[12]\d|3[01])[\/\-.](0?[1-9]|1[0-2])[\/\-.](20\d{2}|\d{2})\b/g)) {
+      const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+      dateCandidates.push(`${year}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`);
     }
-
-    return {
-      desc: detectedMerchant,
-      amount: detectedAmount > 0 ? detectedAmount : "",
-      date: detectedDate,
-      cat: detectedCategory,
-      rawText: rawText
-    };
+    const validDates = [...new Set(dateCandidates.filter(isValidDate))];
+    if (validDates.length === 1) date = validDates[0];
+    if (!date) warnings.push(validDates.length > 1 ?
+      "El comprobante contiene varias fechas. Confirma la fecha del gasto." :
+      "No se identificó una fecha válida. Completa la fecha del gasto.");
+    return { desc: detectedMerchant.slice(0, 80), amount, date, cat: detectedCategory,
+      warnings, needsConfirmation: warnings.length > 0, rawText };
   }
 
-  function normalizeNumber(str) {
-    if (!str) return 0;
-    // Si contiene punto y coma: "1.250,50" -> 1250.50 o "1,250.50" -> 1250.50
-    if (str.includes(".") && str.includes(",")) {
-      if (str.lastIndexOf(",") > str.lastIndexOf(".")) {
-        // Formato europeo/argentino: 1.250,50
-        str = str.replace(/\./g, "").replace(",", ".");
-      } else {
-        // Formato anglosajón: 1,250.50
-        str = str.replace(/,/g, "");
-      }
-    } else if (str.includes(",")) {
-      // Solo coma: "1250,50" -> 1250.50
-      str = str.replace(",", ".");
+  function receiptFingerprint(expense) {
+    return [normalizeText(expense.desc), Number(expense.amount).toFixed(2), expense.date].join("|");
+  }
+
+  function modalMessage(id, message, role) {
+    let element = $(id);
+    if (!element) {
+      element = document.createElement("div");
+      element.id = id;
+      element.className = role === "alert" ? "err" : "sub";
+      element.setAttribute("role", role);
+      const parent = $("receipt-review-form");
+      if (parent) parent.prepend(element);
     }
-    const val = parseFloat(str);
-    return isNaN(val) ? 0 : Math.round(val * 100) / 100;
+    if (element) { element.textContent = message; element.hidden = !message; }
   }
 
-  function getFallbackParsed() {
-    return {
-      desc: "Comprobante",
-      amount: "",
-      date: today(),
-      cat: "Otros",
-      rawText: ""
-    };
+  function cancelJob() {
+    jobSequence++;
+    const cancel = activeCancel;
+    activeCancel = null;
+    if (cancel) Promise.resolve().then(cancel).catch(() => {});
   }
 
-  // --------------------------------------------------------------------------
-  // 4. Controlador de Interfaz de Usuario y Modal de Revisión
-  // --------------------------------------------------------------------------
   function openScannerModal() {
     const modal = $("receipt-modal");
     if (!modal) return;
+    if (modal.hasAttribute("hidden")) returnFocus = document.activeElement;
     modal.removeAttribute("hidden");
-    $("receipt-loading").removeAttribute("hidden");
-    $("receipt-review-form").setAttribute("hidden", "true");
+    $("receipt-loading").hidden = false;
+    $("receipt-review-form").hidden = true;
+    modalMessage("receipt-error", "", "alert");
+    const closeButton = $("btn-close-receipt-modal");
+    if (closeButton) closeButton.focus();
   }
 
   function closeScannerModal() {
+    cancelJob();
     const modal = $("receipt-modal");
-    if (modal) modal.setAttribute("hidden", "true");
+    if (modal) modal.hidden = true;
     const fileInput = $("receipt-file-input");
     if (fileInput) fileInput.value = "";
     currentParsedData = null;
+    currentSourceHash = "";
+    reviewProfile = null;
+    reviewCurrency = "";
+    if (currentFilePreview) URL.revokeObjectURL(currentFilePreview);
     currentFilePreview = null;
+    // A closed dialog must not retain another profile's receipt in the DOM.
+    for (const id of ["receipt-desc", "receipt-amt", "receipt-date", "receipt-cat"]) {
+      const input = $(id);
+      if (input) input.value = "";
+    }
+    for (const id of ["receipt-file-name", "receipt-raw-text", "receipt-loading-text"]) {
+      const element = $(id);
+      if (element) element.textContent = "";
+    }
+    const thumb = $("receipt-preview-thumb");
+    if (thumb) { thumb.textContent = ""; thumb.style.backgroundImage = "none"; }
+    const recurring = $("receipt-rec");
+    if (recurring) recurring.checked = false;
+    modalMessage("receipt-error", "", "alert");
+    modalMessage("receipt-warning", "", "status");
+    if (returnFocus && returnFocus.isConnected !== false && returnFocus.focus) returnFocus.focus();
+    returnFocus = null;
   }
 
   function updateLoadingStatus(message) {
-    const textEl = $("receipt-loading-text");
-    if (textEl) textEl.textContent = message;
+    const element = $("receipt-loading-text");
+    if (element) element.textContent = message;
   }
 
   function showReviewForm(parsed, file) {
-    $("receipt-loading").setAttribute("hidden", "true");
-    const reviewForm = $("receipt-review-form");
-    reviewForm.removeAttribute("hidden");
-
-    // Llenar inputs
-    $("receipt-desc").value = parsed.desc || "";
-    $("receipt-amt").value = parsed.amount !== "" ? parsed.amount : "";
-    $("receipt-date").value = parsed.date || today();
-
-    // Rellenar selector de categorías si está vacío
-    const catSelect = $("receipt-cat");
-    if (catSelect.children.length === 0) {
-      CATS.forEach(([name, _, icon]) => {
-        catSelect.appendChild(new Option(`${icon} ${name}`, name));
-      });
-    }
-    catSelect.value = parsed.cat || "Otros";
-
-    // Checkbox de recurrente desmarcado por defecto
+    $("receipt-loading").hidden = true;
+    $("receipt-review-form").hidden = false;
+    $("receipt-desc").value = parsed.desc;
+    $("receipt-amt").value = parsed.amount;
+    $("receipt-date").value = parsed.date;
+    const categories = $("receipt-cat");
+    if (!categories.children.length) CATS.forEach(([name, , icon]) => categories.appendChild(new Option(`${icon} ${name}`, name)));
+    categories.value = parsed.cat;
     $("receipt-rec").checked = false;
-
-    // Nombre de archivo y preview
     $("receipt-file-name").textContent = file.name || "Comprobante";
     const thumb = $("receipt-preview-thumb");
-    if (file.type === "application/pdf") {
-      thumb.textContent = "📄";
-      thumb.style.backgroundImage = "none";
-    } else if (currentFilePreview) {
-      thumb.textContent = "";
-      thumb.style.backgroundImage = `url(${currentFilePreview})`;
-    } else {
-      thumb.textContent = "🧾";
-      thumb.style.backgroundImage = "none";
-    }
-
-    // Texto extraído en detalles
-    $("receipt-raw-text").textContent = parsed.rawText.trim() || "(No se detectó texto seleccionable)";
-
+    thumb.textContent = currentFilePreview ? "" : "📄";
+    thumb.style.backgroundImage = currentFilePreview ? `url("${currentFilePreview}")` : "none";
+    $("receipt-raw-text").textContent = parsed.rawText.trim() || "(No se detectó texto)";
+    modalMessage("receipt-warning", parsed.warnings.join(" "), "status");
     currentParsedData = parsed;
     $("receipt-amt").focus();
   }
 
+  async function sourceHash(buffer) {
+    if (!window.crypto || !window.crypto.subtle) return "";
+    const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   async function handleFileSelected(file) {
-    if (!file) return;
-
+    if (!file || savingReceipt) return;
+    cancelJob();
+    const job = jobSequence;
+    const profile = getProfile();
+    const isCurrent = () => job === jobSequence && profile === getProfile();
+    if (currentFilePreview) URL.revokeObjectURL(currentFilePreview);
+    currentParsedData = null;
+    currentSourceHash = "";
+    currentFilePreview = null;
+    reviewProfile = profile;
+    reviewCurrency = State.currency;
     openScannerModal();
-    updateLoadingStatus("Cargando archivo...");
-
-    // Generar vista previa en miniatura para imágenes
-    if (file.type.startsWith("image/")) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        currentFilePreview = e.target.result;
-      };
-      reader.readAsDataURL(file);
-    }
-
+    const updateStatus = (message) => { if (isCurrent()) updateLoadingStatus(message); };
     try {
-      let rawText = "";
-
-      if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
-        const buffer = await file.arrayBuffer();
-        rawText = await extractTextFromPdf(buffer, updateLoadingStatus);
-      } else if (file.type.startsWith("image/")) {
-        rawText = await extractTextFromImage(file, updateLoadingStatus);
-      } else {
-        throw new Error("Formato no compatible. Por favor sube una imagen (PNG, JPG) o un PDF.");
-      }
-
-      updateLoadingStatus("Identificando datos y montos...");
-      const parsed = parseReceipt(rawText);
+      if (!(file.size > 0) || file.size > MAX_FILE_BYTES) throw new Error("Usa un archivo de hasta 20 MB que no esté vacío.");
+      const pdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+      const image = /^image\//.test(file.type || "");
+      if (!pdf && !image) throw new Error("El formato debe ser PDF o una imagen PNG/JPG compatible.");
+      if (image) currentFilePreview = URL.createObjectURL(file);
+      updateStatus("Leyendo archivo en este dispositivo...");
+      const buffer = await file.arrayBuffer();
+      const hash = await sourceHash(buffer);
+      if (!isCurrent()) return;
+      currentSourceHash = hash;
+      const rawText = pdf ? await extractTextFromPdf(buffer, updateStatus, isCurrent) :
+        await extractTextFromImage(file, updateStatus, isCurrent);
+      if (!isCurrent()) return;
+      activeCancel = null;
+      showReviewForm(parseReceipt(rawText), file);
+    } catch (error) {
+      if (!isCurrent()) return;
+      activeCancel = null;
+      const parsed = parseReceipt("");
+      parsed.warnings.unshift(`Lectura automática no disponible: ${error.message || "error desconocido"}. Puedes completar los datos aquí.`);
       showReviewForm(parsed, file);
-    } catch (err) {
-      console.error("Error al procesar comprobante:", err);
-      $("receipt-loading").setAttribute("hidden", "true");
-      alert(
-        "No se pudo leer el comprobante automáticamente: " +
-          (err.message || "Error al procesar") +
-          ". Puedes registrar el gasto manualmente."
-      );
-      closeScannerModal();
     }
   }
 
   function handleSaveReceiptExpense() {
-    const desc = $("receipt-desc").value.trim();
-    const amtStr = $("receipt-amt").value.replace(",", ".");
-    const amountVal = parseFloat(amtStr);
-    const dateVal = $("receipt-date").value;
-    const catVal = $("receipt-cat").value;
+    if (!currentParsedData || savingReceipt) return;
+    const saveJob = jobSequence;
+    const saveProfile = reviewProfile;
+    const isCurrent = () => saveJob === jobSequence && saveProfile === getProfile();
+    if (!isCurrent()) { closeScannerModal(); return; }
+    modalMessage("receipt-error", "", "alert");
+    const desc = $("receipt-desc").value.trim().slice(0, 80);
+    const amount = parseScanAmount($("receipt-amt").value);
+    const date = $("receipt-date").value;
+    const cat = $("receipt-cat").value;
     const isRecurring = $("receipt-rec").checked;
-
-    if (!desc || isNaN(amountVal) || amountVal <= 0 || !dateVal) {
-      alert("Por favor verifica que la descripción, importe mayor a 0 y fecha sean válidos.");
+    if (!desc || !Number.isFinite(amount) || !Number.isSafeInteger(Math.round(amount * 100)) ||
+        Math.round(amount * 100) <= 0 || !isValidDate(date) || !Object.hasOwn(COL, cat)) {
+      modalMessage("receipt-error", "Completa una descripción, un importe válido mayor a cero y una fecha válida.", "alert");
       return;
     }
-
-    const newExpense = {
-      id: uid(),
-      desc: desc,
-      amount: Math.round(amountVal * 100) / 100,
-      cat: catVal,
-      date: dateVal
-    };
-
-    State.expenses.push(newExpense);
-
-    if (isRecurring) {
-      State.recurring.push({
-        id: uid(),
-        desc: desc,
-        amount: newExpense.amount,
-        cat: newExpense.cat,
-        day: Number(dateVal.slice(8)),
-        from: dateVal.slice(0, 7),
-        done: [dateVal.slice(0, 7)]
-      });
-      if (window.Spendly.Recurring) {
-        window.Spendly.Recurring.apply();
+    if (reviewCurrency !== State.currency) {
+      modalMessage("receipt-error", "La moneda cambió mientras revisabas el comprobante. Ciérralo y vuelve a abrirlo para confirmar el importe.", "alert");
+      return;
+    }
+    const newExpense = { id: uid(), desc, amount: Math.round(amount * 100) / 100, date, cat };
+    newExpense.receiptFingerprint = receiptFingerprint(newExpense);
+    if (currentSourceHash) newExpense.sourceHash = currentSourceHash;
+    const saveButton = $("btn-confirm-receipt");
+    let previousState;
+    savingReceipt = true;
+    if (saveButton) saveButton.disabled = true;
+    try {
+      const exactDuplicate = newExpense.sourceHash && State.expenses.some((expense) => expense.sourceHash === newExpense.sourceHash);
+      const possibleDuplicate = State.expenses.some((expense) => receiptFingerprint(expense) === newExpense.receiptFingerprint);
+      if ((exactDuplicate || possibleDuplicate) && !window.confirm(exactDuplicate ?
+        "Este mismo archivo ya fue registrado. ¿Quieres registrar otro gasto de todos modos?" :
+        "Ya existe un gasto del mismo comercio, fecha e importe. ¿Quieres registrarlo igualmente?")) return;
+      // A native confirmation can outlive a profile change or a cancelled review.
+      if (!isCurrent()) { closeScannerModal(); return; }
+      previousState = JSON.parse(JSON.stringify(State));
+      State.expenses.push(newExpense);
+      if (isRecurring) {
+        const nowMonth = window.Spendly.ymOf(new Date());
+        const expenseMonth = date.slice(0, 7);
+        const from = expenseMonth > nowMonth ? expenseMonth : nowMonth;
+        const ruleId = uid();
+        newExpense.rid = ruleId;
+        State.recurring.push({ id: ruleId, desc, amount: newExpense.amount, cat,
+          day: Number(date.slice(8)), from, done: expenseMonth === from ? [expenseMonth] : [] });
+        if (window.Spendly.Recurring) window.Spendly.Recurring.apply();
       }
+      if (!isCurrent()) throw new Error("La revisión del comprobante cambió antes del guardado.");
+      if (saveState() !== true) throw new Error("No se pudo guardar en este dispositivo. Conserva el comprobante y vuelve a intentar.");
+    } catch (error) {
+      // Recurring.apply may also have changed existing rules; restore the complete snapshot.
+      // Never restore an old profile over state loaded by a newer session.
+      if (previousState && saveProfile === getProfile()) {
+        for (const key of Object.keys(State)) delete State[key];
+        Object.assign(State, previousState);
+      }
+      if (isCurrent()) modalMessage("receipt-error", error.message || "No se pudo guardar el comprobante.", "alert");
+      return;
+    } finally {
+      savingReceipt = false;
+      if (saveButton) saveButton.disabled = false;
     }
-
-    saveState();
+    if (!isCurrent()) return;
     closeScannerModal();
-
-    // Actualizar vista y mes actual en app.js
-    if (typeof window.Spendly.renderAll === "function") {
-      window.Spendly.renderAll(dateVal.slice(0, 7));
-    }
-
-    if (typeof window.Spendly.showToast === "function") {
-      window.Spendly.showToast(
-        `¡Gasto de ${formatCurrency(newExpense.amount)} añadido del comprobante!`,
-        "success",
-        "🧾"
-      );
-    }
+    if (window.Spendly.renderAll) window.Spendly.renderAll(date.slice(0, 7));
+    if (window.Spendly.showToast) window.Spendly.showToast(`Gasto de ${formatCurrency(newExpense.amount)} guardado.`, "success", "🧾");
   }
 
-  // --------------------------------------------------------------------------
-  // 5. Inicialización de Eventos del Escáner
-  // --------------------------------------------------------------------------
   function initScanner() {
-    const scanBtn = $("btn-scan-receipt");
-    const scanBtnHeader = $("btn-scan-receipt-hero");
-    const fileInput = $("receipt-file-input");
-    const btnCancel = $("btn-cancel-receipt");
-    const btnClose = $("btn-close-receipt-modal");
-    const btnConfirm = $("btn-confirm-receipt");
+    const input = $("receipt-file-input");
+    const trigger = (event) => { if (event) event.stopPropagation(); if (input) input.click(); };
+    for (const id of ["btn-scan-receipt", "btn-scan-receipt-hero"]) { const button = $(id); if (button) button.onclick = trigger; }
+    if (input) input.onchange = (event) => { const file = event.target.files && event.target.files[0]; if (file) handleFileSelected(file); };
     const dropzone = $("receipt-dropzone");
-
-    // Disparar input file
-    const triggerUpload = () => {
-      if (fileInput) fileInput.click();
-    };
-
-    if (scanBtn) scanBtn.onclick = triggerUpload;
-    if (scanBtnHeader) scanBtnHeader.onclick = triggerUpload;
-
-    if (fileInput) {
-      fileInput.onchange = (e) => {
-        const file = e.target.files && e.target.files[0];
-        if (file) handleFileSelected(file);
-      };
-    }
-
-    // Soporte para Drag & Drop
     if (dropzone) {
-      dropzone.onclick = triggerUpload;
-      dropzone.ondragover = (e) => {
-        e.preventDefault();
-        dropzone.classList.add("dragover");
-      };
-      dropzone.ondragleave = () => {
-        dropzone.classList.remove("dragover");
-      };
-      dropzone.ondrop = (e) => {
-        e.preventDefault();
-        dropzone.classList.remove("dragover");
-        const file = e.dataTransfer.files && e.dataTransfer.files[0];
-        if (file) handleFileSelected(file);
-      };
+      dropzone.onclick = trigger;
+      dropzone.ondragover = (event) => { event.preventDefault(); dropzone.classList.add("dragover"); };
+      dropzone.ondragleave = () => dropzone.classList.remove("dragover");
+      dropzone.ondrop = (event) => { event.preventDefault(); dropzone.classList.remove("dragover"); const file = event.dataTransfer.files[0]; if (file) handleFileSelected(file); };
     }
-
-    // Acciones de modal
-    if (btnCancel) btnCancel.onclick = closeScannerModal;
-    if (btnClose) btnClose.onclick = closeScannerModal;
-    if (btnConfirm) btnConfirm.onclick = handleSaveReceiptExpense;
-
-    // Cerrar al pulsar escape
-    window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        const modal = $("receipt-modal");
-        if (modal && !modal.hasAttribute("hidden")) {
-          closeScannerModal();
-        }
+    for (const id of ["btn-cancel-receipt", "btn-close-receipt-modal"]) { const button = $(id); if (button) button.onclick = closeScannerModal; }
+    const confirm = $("btn-confirm-receipt");
+    if (confirm) confirm.onclick = handleSaveReceiptExpense;
+    const modal = $("receipt-modal");
+    if (modal) modal.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); closeScannerModal(); }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(modal.querySelectorAll('button, input, select, summary, [tabindex="0"]')).filter((element) =>
+        !element.disabled && !element.closest("[hidden]") && element.getClientRects().length);
+      if (!focusable.length) { event.preventDefault(); return; }
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+        event.preventDefault(); first.focus();
       }
     });
   }
 
-  // Exponer API del escáner
-  window.Spendly = window.Spendly || {};
-  window.Spendly.Scanner = {
-    init: initScanner,
-    parseReceipt: parseReceipt,
-    handleFile: handleFileSelected
-  };
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initScanner);
-  } else {
-    initScanner();
-  }
+  window.Spendly.Scanner = { init: initScanner, parseReceipt, handleFile: handleFileSelected,
+    ASSETS, textItemsToLines, receiptFingerprint, reset: closeScannerModal };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initScanner);
+  else initScanner();
 })(window);
