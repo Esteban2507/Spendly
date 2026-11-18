@@ -1,0 +1,17 @@
+{
+  "name": "spendly",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Control local de gastos personales, presupuestos y comprobantes",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "node --check sw.js && node --check js/state.js && node --check js/recurring.js && node --check js/chart.js && node --check js/scanner.js && node --check js/auth.js && node --check js/cloud.js && node --check js/account.js && node --check js/app.js",
+    "test:browser": "playwright test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}

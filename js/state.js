@@ -77,10 +77,12 @@
       id,
       desc: String(e.desc == null ? "" : e.desc).trim().slice(0, 80) || "Sin descripción",
       amount: Math.round(amount * 100) / 100,
-      cat: COL[e.cat] ? e.cat : "Otros",
+      cat: Object.hasOwn(COL, e.cat) ? e.cat : "Otros",
       date: e.date
     };
     if (e.rid) clean.rid = String(e.rid);
+    if (typeof e.sourceHash === "string" && /^[a-f0-9]{64}$/i.test(e.sourceHash)) clean.sourceHash = e.sourceHash.toLowerCase();
+    if (typeof e.receiptFingerprint === "string" && e.receiptFingerprint.length <= 256) clean.receiptFingerprint = e.receiptFingerprint;
     return clean;
   }
 
@@ -97,7 +99,7 @@
       id,
       desc: r.desc.trim().slice(0, 80),
       amount: Math.round(amount * 100) / 100,
-      cat: COL[r.cat] ? r.cat : "Otros",
+      cat: Object.hasOwn(COL, r.cat) ? r.cat : "Otros",
       day,
       from: r.from,
       done: Array.isArray(r.done) ? r.done.filter((m) => typeof m === "string" && MONTH_RE.test(m)) : []
@@ -213,50 +215,155 @@
     dismissed: []
   };
 
-  // Carga de estado desde localStorage (limpiando registros dañados). Devuelve { dropped }.
-  function loadState() {
-    let dropped = 0;
-    let raw = null;
+  let activeProfile = null;
+  let cloudBaseline;
+  let cloudDirty = false;
+  let storageError = "";
+  let storageBlocked = false;
+  let savedSnapshot = "";
+  let knownLocalRaw = null;
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const stateSnapshot = () => JSON.stringify(State);
+  const profileKey = (profile = activeProfile) => profile === null ? STORAGE_KEY : STORAGE_KEY + ":user:" + encodeURIComponent(profile);
+
+  function getProfile() { return activeProfile; }
+  function getCloudBaseline() { return cloudBaseline; }
+  function isCloudDirty() { return activeProfile !== null && cloudDirty; }
+  function getStorageStatus() { return { ok: !storageError, error: storageError }; }
+  function emptyState() { return sanitizeState({ expenses: [], recurring: [], dismissed: [], budget: 0, currency: detectDefaultCurrency() }); }
+  function failStorage(message) { storageError = message; return false; }
+  function validateState(raw) {
+    if (!raw || typeof raw !== "object" || !Array.isArray(raw.expenses)) throw new Error("Formato de datos inválido.");
+    if (Number(raw.version) > DATA_VERSION) throw new Error("Los datos pertenecen a una versión más reciente.");
+    const clean = sanitizeState(raw);
+    if (clean.dropped > 0) throw new Error("Hay registros dañados. Descarga una copia antes de restaurar los datos.");
+    return clean;
+  }
+  function envelope(state, revision, dirty) {
+    return activeProfile === null ? state : {
+      format: "spendly-profile-v1", owner: activeProfile, state,
+      ...(revision !== undefined ? { cloudRevision: revision } : {}), dirty: !!dirty
+    };
+  }
+  function writeLocal(state, revision, dirty, allowRecovery = false) {
+    if (storageBlocked && !allowRecovery) return failStorage("El almacenamiento contiene datos dañados. El original se conserva; restaura una copia para continuar.");
     try {
-      raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const clean = sanitizeState(JSON.parse(raw));
-        dropped = clean.dropped;
-        applyState(clean);
-        if (dropped > 0) {
-          // Se conserva una copia de lo que había antes de limpiar, por si hiciera falta recuperarlo
-          try { localStorage.setItem(STORAGE_KEY + "-previo", raw); } catch (e) {}
-          saveState();
-        }
-      }
+      if (localStorage.getItem(profileKey()) !== knownLocalRaw) return failStorage("Los datos cambiaron en otra pestaña. Descarga una copia y vuelve a cargar esta cuenta antes de guardar.");
+      const serialized = JSON.stringify(envelope(state, revision, dirty));
+      localStorage.setItem(profileKey(), serialized);
+      knownLocalRaw = serialized;
+      if (allowRecovery) storageBlocked = false;
+      storageError = "";
+      return true;
     } catch (err) {
-      console.warn("No se pudo cargar el estado local:", err);
-      // JSON ilegible: se guarda tal cual para no perderlo al sobrescribir
-      try { if (raw) localStorage.setItem(STORAGE_KEY + "-corrupto", raw); } catch (e) {}
+      return failStorage("No se pudo guardar en este dispositivo. Descarga un respaldo y revisa el espacio disponible.");
     }
-    return { dropped };
   }
 
-  // Guardar estado en localStorage y, si hay sesión, también en la nube
-  function saveState() {
-    // 1. Guardar siempre en localStorage (funciona sin cuenta)
+  /** Cambia al conjunto exacto de una cuenta. Nunca importa datos del invitado o de otra cuenta. */
+  function switchProfile(uid) {
+    if (uid !== null && (typeof uid !== "string" || !uid)) throw new Error("Identificador de cuenta inválido.");
+    activeProfile = uid;
+    knownLocalRaw = null;
+    cloudBaseline = undefined;
+    cloudDirty = false;
+    storageError = "";
+    storageBlocked = false;
+    applyState(emptyState());
+    let raw = null;
+    let recoverySaved = false;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(State));
-    } catch (err) {
-      console.error("Error al guardar en localStorage:", err);
-    }
-
-    // 2. Si el usuario está autenticado, programar guardado en Firestore (con debounce)
-    const Auth  = window.Spendly && window.Spendly.Auth;
-    const Cloud = window.Spendly && window.Spendly.Cloud;
-    if (Auth && Cloud) {
-      const user = Auth.currentUser();
-      if (user) {
-        Cloud.scheduleSave(user.uid, State);
+      raw = localStorage.getItem(profileKey());
+      knownLocalRaw = raw;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const isEnvelope = uid !== null;
+        if (isEnvelope && (parsed.format !== "spendly-profile-v1" || parsed.owner !== uid || !parsed.state)) throw new Error("El respaldo local no corresponde a esta cuenta.");
+        const clean = validateState(isEnvelope ? parsed.state : parsed);
+        if (isEnvelope) {
+          if (Object.hasOwn(parsed, "cloudRevision") && parsed.cloudRevision !== null && typeof parsed.cloudRevision !== "string") throw new Error("Referencia de sincronización inválida.");
+          cloudBaseline = parsed.cloudRevision;
+          cloudDirty = parsed.dirty === true;
+        }
+        applyState(clean);
       }
+      savedSnapshot = stateSnapshot();
+      return { dropped: 0, error: "", recoverySaved: false };
+    } catch (err) {
+      storageBlocked = true;
+      try { if (raw) { localStorage.setItem(profileKey() + "-corrupto", raw); recoverySaved = true; } } catch (copyError) { /* El original nunca se sobrescribe. */ }
+      storageError = err.message || "No se pudieron cargar los datos locales.";
+      savedSnapshot = stateSnapshot();
+      return { dropped: 0, error: storageError, recoverySaved };
     }
+  }
 
+  function loadState() { return switchProfile(activeProfile); }
+
+  function saveState(options = {}) {
+    const shouldSync = options.sync !== false;
+    const snapshot = clone(State);
+    const dirty = cloudDirty || (activeProfile !== null && shouldSync && stateSnapshot() !== savedSnapshot);
+    if (!writeLocal(snapshot, cloudBaseline, dirty)) return false;
+    cloudDirty = dirty;
+    savedSnapshot = stateSnapshot();
+    const Cloud = window.Spendly && window.Spendly.Cloud;
+    if (shouldSync && activeProfile !== null && cloudDirty && Cloud && cloudBaseline !== undefined) {
+      Cloud.scheduleSave(activeProfile, snapshot, cloudBaseline);
+    }
     return true;
+  }
+
+  /** Actualiza solo la referencia conocida; conserva todos los cambios locales pendientes. */
+  function saveCloudBaseline(revision, expectedUid = activeProfile) {
+    if (expectedUid !== activeProfile || activeProfile === null) return false;
+    if (revision !== null && typeof revision !== "string") return failStorage("Referencia de nube inválida.");
+    if (!writeLocal(clone(State), revision, cloudDirty)) return false;
+    cloudBaseline = revision;
+    savedSnapshot = stateSnapshot();
+    return true;
+  }
+
+  function acceptCloudWrite(uid, revision, sentState, priorRevision) {
+    if (uid !== activeProfile || cloudBaseline !== priorRevision) return false;
+    const dirty = stateSnapshot() !== JSON.stringify(sentState);
+    if (!writeLocal(clone(State), revision, dirty)) return false;
+    cloudBaseline = revision;
+    cloudDirty = dirty;
+    savedSnapshot = stateSnapshot();
+    return true;
+  }
+
+  function replaceFromCloud(raw, revision, expectedUid = activeProfile) {
+    if (expectedUid !== activeProfile || activeProfile === null) return false;
+    try {
+      const clean = raw === null ? emptyState() : validateState(raw);
+      const next = { version: DATA_VERSION, expenses: clean.expenses, budget: clean.budget,
+        currency: clean.currency, recurring: clean.recurring, dismissed: clean.dismissed };
+      if (!writeLocal(next, revision, false)) return false;
+      applyState(clean);
+      cloudBaseline = revision;
+      cloudDirty = false;
+      savedSnapshot = stateSnapshot();
+      return true;
+    } catch (err) { return failStorage(err.message || "No se pudieron aplicar los datos de la nube."); }
+  }
+
+  /** Restauración explícita: el original solo se sustituye si nadie lo cambió desde su lectura. */
+  function replaceLocalState(raw) {
+    try {
+      const clean = validateState(raw);
+      const next = { version: DATA_VERSION, expenses: clean.expenses, budget: clean.budget,
+        currency: clean.currency, recurring: clean.recurring, dismissed: clean.dismissed };
+      const dirty = activeProfile !== null;
+      if (!writeLocal(next, cloudBaseline, dirty, true)) return false;
+      applyState(clean);
+      cloudDirty = dirty;
+      savedSnapshot = stateSnapshot();
+      const Cloud = window.Spendly && window.Spendly.Cloud;
+      if (dirty && Cloud && cloudBaseline !== undefined) Cloud.scheduleSave(activeProfile, next, cloudBaseline);
+      return true;
+    } catch (err) { return failStorage(err.message || "No se pudo restaurar el respaldo."); }
   }
 
   function isIOS() {
@@ -383,4 +490,15 @@
   window.Spendly.parseAmount = parseAmount;
   window.Spendly.sanitizeState = sanitizeState;
   window.Spendly.applyState = applyState;
+  window.Spendly.isValidDate = isValidDate;
+  window.Spendly.switchProfile = switchProfile;
+  window.Spendly.getProfile = getProfile;
+  window.Spendly.getCloudBaseline = getCloudBaseline;
+  window.Spendly.isCloudDirty = isCloudDirty;
+  window.Spendly.saveCloudBaseline = saveCloudBaseline;
+  window.Spendly.setCloudBaseline = saveCloudBaseline;
+  window.Spendly.acceptCloudWrite = acceptCloudWrite;
+  window.Spendly.replaceFromCloud = replaceFromCloud;
+  window.Spendly.getStorageStatus = getStorageStatus;
+  window.Spendly.replaceLocalState = replaceLocalState;
 })(window);

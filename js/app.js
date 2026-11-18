@@ -26,10 +26,16 @@
     exportBackup,
     detectDefaultCurrency,
     parseAmount,
+    isValidDate,
     sanitizeState,
     applyState,
+    replaceLocalState,
+    getStorageStatus,
     Recurring,
-    Chart
+    Chart,
+    Account,
+    Auth,
+    Cloud
   } = window.Spendly;
 
   const $ = (id) => document.getElementById(id);
@@ -46,6 +52,8 @@
   let evolutionRange = 6;
   let searchTerm = "";
   let selectedCategoryChip = "Comida";
+  let profileViewVersion = 0;
+  let editingSnapshot = null;
   let editingId = null; // id del gasto que se está editando (null = alta nueva)
 
   // --------------------------------------------------------------------------
@@ -76,7 +84,8 @@
   const THEME_KEY = "spendly-theme";
 
   function initTheme() {
-    const savedTheme = localStorage.getItem(THEME_KEY) || "auto";
+    let savedTheme = "auto";
+    try { savedTheme = localStorage.getItem(THEME_KEY) || "auto"; } catch (_) {}
     applyTheme(savedTheme);
 
     const themeBtn = $("theme-btn");
@@ -89,7 +98,7 @@
         else next = "auto";
 
         applyTheme(next);
-        localStorage.setItem(THEME_KEY, next);
+        try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
         showToast(
           next === "dark" ? "Modo oscuro activado 🌙" : next === "light" ? "Modo claro activado ☀️" : "Tema del sistema 💻",
           "info"
@@ -190,6 +199,7 @@
   // Modo edición: reutiliza el formulario de "Registrar Nuevo Gasto"
   function setEditMode(expense) {
     editingId = expense ? expense.id : null;
+    editingSnapshot = expense ? JSON.stringify(expense) : null;
     $("edit-banner").hidden = !expense;
     $("edit-banner-text").textContent = expense ? `✏️ Editando «${expense.desc}»` : "";
     $("add").textContent = expense ? "💾 Guardar cambios" : "＋ Añadir Gasto";
@@ -223,14 +233,23 @@
     showToast(result === "shared" ? `${label} compartid${end}` : `${label} descargad${end}`, "success", "📥");
   }
 
-  function persistAndNotify() {
-    const success = saveState();
-    const statusEl = $("status");
-    if (statusEl) {
-      statusEl.textContent = success
-        ? "Guardado en este dispositivo"
-        : "No se pudo guardar localmente";
+  function storageMessage(message) {
+    $("local-status").textContent = message;
+  }
+
+  function persistAndNotify(change) {
+    const previous = JSON.parse(JSON.stringify(State));
+    change();
+    if (saveState()) {
+      storageMessage("Datos guardados en este dispositivo.");
+      return true;
     }
+    applyState(previous);
+    const message = getStorageStatus().error || "No se pudo guardar el cambio. Los datos anteriores se conservan.";
+    storageMessage(message);
+    showToast(message, "error", "⚠️");
+    render();
+    return false;
   }
 
   // --------------------------------------------------------------------------
@@ -463,10 +482,10 @@
         const ok = window.confirm(
           `¿Deseas eliminar "${item.desc}" (${formatCurrency(item.amount)})?`
         );
-        if (ok) {
-          if (editingId === item.id) setEditMode(null);
+        if (ok && persistAndNotify(() => {
           State.expenses = State.expenses.filter((x) => x.id !== item.id);
-          persistAndNotify();
+        })) {
+          if (editingId === item.id) setEditMode(null);
           render();
           showToast(`Gasto "${item.desc}" eliminado`, "info", "🗑️");
         }
@@ -513,24 +532,24 @@
       const btnNo = createElement("button", null, "Descartar");
 
       btnYes.onclick = () => {
-        State.recurring.push({
-          id: uid(),
-          desc: sug.desc,
-          amount: sug.amount,
-          cat: sug.cat,
-          day: sug.day,
-          from: ymOf(new Date()),
-          done: []
-        });
-        Recurring.apply();
-        persistAndNotify();
+        if (!persistAndNotify(() => {
+          State.recurring.push({
+            id: uid(),
+            desc: sug.desc,
+            amount: sug.amount,
+            cat: sug.cat,
+            day: sug.day,
+            from: ymOf(new Date()),
+            done: []
+          });
+          Recurring.apply();
+        })) return;
         render();
         showToast(`"${sug.desc}" añadido a gastos recurrentes`, "success", "🔄");
       };
 
       btnNo.onclick = () => {
-        State.dismissed.push(sug.key);
-        persistAndNotify();
+        if (!persistAndNotify(() => State.dismissed.push(sug.key))) return;
         render();
         showToast("Sugerencia descartada", "info", "👍");
       };
@@ -560,9 +579,9 @@
 
       amountInput.onchange = () => {
         const val = parseFloat(amountInput.value);
-        if (val > 0) {
-          rule.amount = Math.round(val * 100) / 100;
-          persistAndNotify();
+        const amount = Math.round(val * 100) / 100;
+        if (Number.isFinite(amount) && amount > 0) {
+          if (!persistAndNotify(() => { rule.amount = amount; })) return;
           showToast(`Importe de "${rule.desc}" actualizado`, "success");
         } else {
           amountInput.value = rule.amount;
@@ -571,8 +590,9 @@
 
       const cancelBtn = createElement("button", null, "Dejar de repetir");
       cancelBtn.onclick = () => {
-        State.recurring = State.recurring.filter((r) => r.id !== rule.id);
-        persistAndNotify();
+        if (!persistAndNotify(() => {
+          State.recurring = State.recurring.filter((r) => r.id !== rule.id);
+        })) return;
         render();
         showToast(`Se canceló la regla recurrente de "${rule.desc}"`, "info");
       };
@@ -626,7 +646,7 @@
     const dateVal = dateInput.value;
     const catVal = selectedCategoryChip || $("cat").value;
 
-    if (!desc || !(amountVal > 0) || !dateVal) {
+    if (!desc || !Number.isFinite(amountVal) || Math.round(amountVal * 100) <= 0 || !isValidDate(dateVal)) {
       errBox.textContent = "⚠️ Completa la descripción, un importe mayor a 0 y una fecha válida.";
       return;
     }
@@ -637,41 +657,38 @@
     // --- Edición de un gasto existente ---
     if (editingId) {
       const target = State.expenses.find((x) => x.id === editingId);
-      if (target) Object.assign(target, { desc, amount, cat: catVal, date: dateVal });
+      if (!target || JSON.stringify(target) !== editingSnapshot) {
+        errBox.textContent = "El movimiento cambió. Volvé a abrirlo antes de editar.";
+        return;
+      }
+      if (!persistAndNotify(() => {
+        Object.assign(target, { desc, amount, cat: catVal, date: dateVal });
+        delete target.receiptFingerprint;
+      })) return;
       setEditMode(null);
       currentMonth = dateVal.slice(0, 7);
-      persistAndNotify();
       render();
       showToast(`Gasto «${desc}» actualizado`, "success", "✏️");
       return;
     }
 
     // --- Alta nueva ---
-    State.expenses.push({ id: uid(), desc, amount, cat: catVal, date: dateVal });
-
     let recurringNote = "";
-    if (recCheckbox.checked) {
-      // La regla empieza este mes (o el mes del gasto si es futuro): nunca rellena meses pasados.
+    if (!persistAndNotify(() => {
+      State.expenses.push({ id: uid(), desc, amount, cat: catVal, date: dateVal });
+      if (!recCheckbox.checked) return;
       const expMonth = dateVal.slice(0, 7);
       const nowMonth = ymOf(new Date());
       const startMonth = expMonth > nowMonth ? expMonth : nowMonth;
       State.recurring.push({
-        id: uid(),
-        desc,
-        amount,
-        cat: catVal,
-        day: Number(dateVal.slice(8)),
-        from: startMonth,
+        id: uid(), desc, amount, cat: catVal,
+        day: Number(dateVal.slice(8)), from: startMonth,
         done: expMonth === startMonth ? [expMonth] : []
       });
-      recCheckbox.checked = false;
-      const res = Recurring.apply();
-      recurringNote =
-        expMonth < nowMonth
-          ? ` Se repetirá cada mes desde ${Chart.getMonthName(startMonth).toLowerCase()}.`
-          : " Se repetirá cada mes.";
-      if (res.added > 0) recurringNote += " Ya se añadió el de este mes.";
-    }
+      Recurring.apply();
+      recurringNote = " Se repetirá cada mes.";
+    })) return;
+    recCheckbox.checked = false;
 
     currentMonth = dateVal.slice(0, 7);
 
@@ -679,7 +696,6 @@
     amtInput.value = "";
     descInput.focus();
 
-    persistAndNotify();
     render();
     showToast(`¡Gasto de ${formatCurrency(amount)} añadido!${recurringNote}`, "success", "🎉");
   }
@@ -746,15 +762,21 @@
 
     // Presupuesto y moneda
     $("budget").onchange = () => {
-      State.budget = Math.max(0, parseFloat($("budget").value) || 0);
-      persistAndNotify();
+      const budget = Math.max(0, Number($("budget").value) || 0);
+      if (!Number.isFinite(budget) || !persistAndNotify(() => { State.budget = budget; })) {
+        $("budget").value = State.budget || "";
+        return;
+      }
       render();
       showToast("Presupuesto mensual actualizado", "success", "🎯");
     };
 
     $("cur").onchange = () => {
-      State.currency = $("cur").value;
-      persistAndNotify();
+      const currency = $("cur").value;
+      if (!persistAndNotify(() => { State.currency = currency; })) {
+        $("cur").value = State.currency;
+        return;
+      }
       render();
       showToast(`Divisa cambiada a ${State.currency}`, "info", "💱");
     };
@@ -792,13 +814,19 @@
       const file = e.target.files && e.target.files[0];
       e.target.value = "";
       if (!file) return;
+      const version = profileViewVersion;
 
       try {
         const text = await file.text();
+        if (version !== profileViewVersion) return;
         const imported = JSON.parse(text);
 
         if (!imported || !Array.isArray(imported.expenses)) {
           throw new Error("Formato inválido");
+        }
+        if (Number(imported.version) > State.version) {
+          showToast("Este respaldo requiere una versión más reciente de Spendly.", "error", "⚠️");
+          return;
         }
 
         const clean = sanitizeState(imported);
@@ -808,10 +836,13 @@
         );
         if (!ok) return;
 
+        if (!replaceLocalState(clean)) {
+          storageMessage("No se pudo guardar el respaldo. Los datos anteriores se conservan.");
+          showToast("No se pudo restaurar el respaldo en este dispositivo.", "error", "⚠️");
+          return;
+        }
+        storageMessage("Respaldo guardado en este dispositivo.");
         setEditMode(null);
-        applyState(clean);
-
-        persistAndNotify();
         $("budget").value = State.budget > 0 ? State.budget : "";
         $("cur").value = State.currency;
         render();
@@ -821,8 +852,8 @@
       }
     };
 
-    const recurringResult = Recurring.apply();
-    if (recurringResult.changed) saveState();
+    const recurringResult = loadInfo.error ? { added: 0 } : applyRecurringLocally();
+    if (loadInfo.error) storageMessage(loadInfo.error);
 
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist().catch(() => {});
@@ -857,72 +888,112 @@
     initAuthFlow();
   }
 
-  // ─── Lógica de autenticación + sync cloud ────────────────────────────────────
-  function initAuthFlow() {
-    const Auth  = window.Spendly && window.Spendly.Auth;
-    const Cloud = window.Spendly && window.Spendly.Cloud;
+  function applyRecurringLocally() {
+    const previous = JSON.parse(JSON.stringify(State));
+    const result = Recurring.apply();
+    if (!result.changed || saveState()) return result;
+    applyState(previous);
+    storageMessage("No se pudieron guardar los gastos recurrentes en este dispositivo.");
+    return { added: 0 };
+  }
 
-    // Si Firebase no está configurado (config sin reemplazar), salir silenciosamente
-    if (!Auth || !Cloud) return;
+  function refreshProfileView() {
+    $("budget").value = State.budget || "";
+    $("cur").value = State.currency;
+    render();
+  }
 
-    // Inicializar Firebase
-    Auth.init();
-    Cloud.init();
+  async function initAuthFlow() {
+    const loginButtons = [$("btn-auth-login"), $("btn-auth-login-settings")];
+    const logoutButtons = [$("btn-auth-logout"), $("btn-auth-logout-settings")];
+    const cloudStatus = $("cloud-status");
+    const retryButton = $("retry-cloud");
+    const useCloudButton = $("use-cloud");
+    const disable = (buttons, disabled) => buttons.forEach((button) => { button.disabled = disabled; });
+    disable(loginButtons, true);
 
-    // Botones de login/logout en header y settings
-    const btnLogin  = $("btn-auth-login");
-    const btnLogout = $("btn-auth-logout");
-
-    function doLogin() {
-      Auth.signIn().catch((err) => {
-        if (err.code !== "auth/popup-closed-by-user") {
-          showToast("Error al iniciar sesión. Inténtalo de nuevo.", "error", "⚠️");
-        }
-      });
+    const initialized = await Auth.init();
+    if (!initialized.available) {
+      cloudStatus.textContent = initialized.reason || "La sincronización todavía no está configurada. Podés usar Spendly en este navegador.";
+      return;
     }
-
-    function doLogout() {
-      const user = Auth.currentUser();
-      const promise = user ? Cloud.saveNow(user.uid, window.Spendly.State) : Promise.resolve();
-      promise.finally(() => {
-        Auth.signOut().then(() => {
-          showToast("Sesión cerrada correctamente.", "info", "👋");
-        });
-      });
+    if (Cloud.init() === false) {
+      cloudStatus.textContent = "El acceso a Firestore no está disponible. Podés seguir usando Spendly en este navegador.";
+      return;
     }
+    disable(loginButtons, false);
+    cloudStatus.textContent = "Ingresá con Google para abrir los datos de tu cuenta.";
 
-    if (btnLogin)  btnLogin.addEventListener("click", doLogin);
-    if (btnLogout) btnLogout.addEventListener("click", doLogout);
+    Cloud.onStatus(({ phase }) => {
+      retryButton.hidden = !["error", "conflict"].includes(phase);
+      useCloudButton.hidden = phase !== "conflict";
+    });
 
-    // Botones duplicados en la pestaña Ajustes
-    const btnLoginSettings  = $("btn-auth-login-settings");
-    const btnLogoutSettings = $("btn-auth-logout-settings");
-    if (btnLoginSettings)  btnLoginSettings.addEventListener("click", doLogin);
-    if (btnLogoutSettings) btnLogoutSettings.addEventListener("click", doLogout);
-
-    // Escuchar cambios de sesión
-    Auth.onAuthChange((user) => {
-      updateAuthUI(user);
-
-      if (user) {
-        // Usuario acaba de iniciar sesión → cargar datos de la nube y hacer merge
-        showToast(`Bienvenido, ${user.displayName || user.email} 👋`, "success", "☁️");
-
-        Cloud.loadFromCloud(user.uid).then((cloudState) => {
-          if (cloudState) {
-            const merged = Cloud.mergeStates(window.Spendly.State, cloudState);
-            if (merged) {
-              window.Spendly.applyState({ state: merged, dropped: 0 });
-              saveState();
-              render();
-              showToast("Datos sincronizados desde la nube ✓", "success", "☁️");
-            }
-          } else {
-            // No hay datos en la nube → subir los datos locales
-            Cloud.scheduleSave(user.uid, window.Spendly.State);
-          }
-        });
+    const retry = async (useCloud = false) => {
+      const version = profileViewVersion;
+      const success = await Account.reconcile({ useCloud });
+      if (success && profileViewVersion === version) {
+        if (editingId && !State.expenses.some(({ id }) => id === editingId)) setEditMode(null);
+        applyRecurringLocally();
+        refreshProfileView();
       }
+    };
+    retryButton.onclick = () => retry();
+    useCloudButton.onclick = () => {
+      if (window.confirm("Esto reemplazará los datos de esta cuenta guardados en este dispositivo por los de la nube. ¿Querés continuar?")) retry(true);
+    };
+
+    loginButtons.forEach((button) => { button.onclick = async () => {
+      disable(loginButtons, true);
+      try { await Auth.signIn(); }
+      catch (error) {
+        if (error.code !== "auth/popup-closed-by-user") {
+          const message = error.code === "auth/unauthorized-domain"
+            ? "Este dominio todavía no está autorizado en Firebase."
+            : error.code === "auth/popup-blocked"
+              ? "El navegador bloqueó la ventana de Google. Permití las ventanas emergentes y volvé a intentar."
+              : "No se pudo iniciar sesión con Google. Revisá tu conexión e intentá nuevamente.";
+          cloudStatus.textContent = message;
+          showToast(message, "error", "⚠️");
+        }
+      } finally { disable(loginButtons, false); }
+    }; });
+
+    logoutButtons.forEach((button) => { button.onclick = async () => {
+      disable(logoutButtons, true);
+      try { await Auth.signOut(); }
+      catch (_) { showToast("No se pudo cerrar sesión. Volvé a intentar.", "error", "⚠️"); }
+      finally { disable(logoutButtons, false); }
+    }; });
+
+    Auth.onAuthChange(async (user) => {
+      updateAuthUI(user);
+      const uid = user ? user.uid : null;
+      if (uid === window.Spendly.getProfile()) return;
+      profileViewVersion++;
+      window.Spendly.Scanner?.reset();
+      const info = Account.open(uid);
+      setEditMode(null);
+      $("search").value = "";
+      $("filter").value = "";
+      searchTerm = "";
+      currentMonth = ymOf(new Date());
+      storageMessage(info.error || "Los datos de este perfil se guardan en este dispositivo.");
+      refreshProfileView();
+      if (info.error) {
+        Cloud.reportStatus("error", "No se pudo abrir la copia guardada en este dispositivo. Podés restaurar un respaldo.");
+        return;
+      }
+      if (uid) await retry();
+      else {
+        cloudStatus.textContent = "Sesión cerrada. Estás usando los datos de invitado de este navegador.";
+        applyRecurringLocally();
+        refreshProfileView();
+      }
+    });
+
+    window.addEventListener("online", () => {
+      if (window.Spendly.getProfile() && Cloud.getStatus().phase === "error") retry();
     });
   }
 
@@ -947,6 +1018,9 @@
         }
       }
       if (nameEl) nameEl.textContent = user.displayName || user.email || "Usuario";
+    } else {
+      avatarEl?.removeAttribute("src");
+      if (nameEl) nameEl.textContent = "";
     }
 
     // ── Pestaña Ajustes ───────────────────────────────────────────────────────
@@ -967,6 +1041,10 @@
       }
       if (settingsName)  settingsName.textContent  = user.displayName || "Usuario";
       if (settingsEmail) settingsEmail.textContent  = user.email || "";
+    } else {
+      $("settings-user-avatar")?.removeAttribute("src");
+      $("settings-user-name").textContent = "";
+      $("settings-user-email").textContent = "";
     }
   }
 
