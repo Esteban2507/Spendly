@@ -1,6 +1,6 @@
 // Service Worker - Spendly (PWA Offline Cache)
 // Estrategia: Network-first con fallback a caché y actualización en segundo plano
-const CACHE_NAME = "spendly-v8";
+const CACHE_NAME = "spendly-v9";
 
 const APP_SHELL = [
   "./",
