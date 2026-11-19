@@ -1,6 +1,6 @@
 // Service Worker - Spendly (PWA Offline Cache)
 // Estrategia: Network-first con fallback a caché y actualización en segundo plano
-const CACHE_NAME = "spendly-v7";
+const CACHE_NAME = "spendly-v8";
 
 const APP_SHELL = [
   "./",
@@ -11,8 +11,6 @@ const APP_SHELL = [
   "./js/recurring.js",
   "./js/chart.js",
   "./js/scanner.js",
-  "./js/auth.js",
-  "./js/cloud.js",
   "./js/app.js",
   "./assets/brand/spendly-header-logo.png",
   "./assets/icons/app-icon-512.png",
@@ -27,7 +25,9 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
+      .then((cache) => cache.addAll(APP_SHELL.map((path) =>
+        new Request(new URL(path, self.registration.scope), { cache: "reload" })
+      )))
       .then(() => self.skipWaiting())
   );
 });
@@ -37,7 +37,8 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))
+        Promise.all(keys.filter((key) => /^spendly-v\d+$/.test(key) && key !== CACHE_NAME)
+          .map((key) => caches.delete(key)))
       )
       .then(() => self.clients.claim())
   );
@@ -45,10 +46,9 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  // No cachear peticiones de Firebase (autenticación, Firestore)
   if (
     request.method !== "GET" ||
-    new URL(request.url).origin !== location.origin
+    !request.url.startsWith(self.registration.scope)
   ) return;
 
   event.respondWith(
@@ -56,14 +56,18 @@ self.addEventListener("fetch", (event) => {
       .then((response) => {
         if (response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, clone)).catch(() => {}));
         }
         return response;
       })
-      .catch(() =>
-        caches
-          .match(request)
-          .then((cached) => cached || caches.match("./index.html") || caches.match("index.html"))
-      )
+      .catch(async () => {
+        const cache = await caches.open(CACHE_NAME);
+        const cached = await cache.match(request);
+        if (cached) return cached;
+        if (request.mode === "navigate") {
+          return (await cache.match(new URL("./index.html", self.registration.scope).href)) || Response.error();
+        }
+        return Response.error();
+      })
   );
 });

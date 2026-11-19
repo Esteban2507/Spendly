@@ -237,26 +237,15 @@
     return { dropped };
   }
 
-  // Guardar estado en localStorage y, si hay sesión, también en la nube
+  // Guardar estado en el mismo almacenamiento local.
   function saveState() {
-    // 1. Guardar siempre en localStorage (funciona sin cuenta)
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(State));
+      return true;
     } catch (err) {
       console.error("Error al guardar en localStorage:", err);
+      return false;
     }
-
-    // 2. Si el usuario está autenticado, programar guardado en Firestore (con debounce)
-    const Auth  = window.Spendly && window.Spendly.Auth;
-    const Cloud = window.Spendly && window.Spendly.Cloud;
-    if (Auth && Cloud) {
-      const user = Auth.currentUser();
-      if (user) {
-        Cloud.scheduleSave(user.uid, State);
-      }
-    }
-
-    return true;
   }
 
   function isIOS() {
